@@ -208,6 +208,8 @@ SPECTACULAR_SETTINGS = {
         "SerializedUnitStatusEnum": "apps.products.models.SerializedUnit.Status",
         "StockTransferStatusEnum": "apps.inventory.models.StockTransfer.Status",
         "InventoryTransactionKindEnum": "apps.inventory.models.InventoryTransaction.Kind",
+        "LabelBatchStatusEnum": "apps.products.models.LabelBatch.Status",
+        "LabelBatchBarcodeTypeEnum": "apps.products.models.LabelBatch.BarcodeType",
     },
 }
 

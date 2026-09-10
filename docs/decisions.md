@@ -359,3 +359,75 @@ support it, but there is no dedicated quantity-stock UI. Phase 8 wires
 `damage()`; Phase 5 bulk generation calls `generate()`. Advisory-lock namespace
 `1001` is still the only one in use (the ledger uses row locks, not advisory
 locks).
+
+---
+
+## ADR-010 — Bulk generation reuses the serial allocator; label PDFs via ReportLab in a Celery task, recorded on a `LabelBatch` history row
+
+**Status:** Accepted (Phase 5)
+
+**Context.** Phase 5 (`HEXAGARE_FEATURES.md` §10–11) is "generate N units of a
+variant + a printable label sheet". §10/§11's UI wording includes "set starting
+serial number" and "set serial prefix", and the build-prompt library table names
+**WeasyPrint** for the PDF. But ADR-008 / `serialized-units.md` make the serial
+format allocator-owned (per-variant advisory-locked `MAX(sequence)+1`, immutable,
+never caller-chosen), the backend Dockerfile is `python:3.12-slim` with no build
+toolchain, and a label sheet is a fixed millimetre grid (`LabelSize` already
+models `columns`/`rows`/`margin_mm`/`gutter_mm`/`width_mm`/`height_mm`/
+`orientation`), not an HTML page. CLAUDE.md's Celery rule: commit the business
+transaction first, enqueue the task after; a PDF failure must not roll back the
+units.
+
+**Decision.**
+1. **No caller-supplied starting serial or prefix.** `bulk_generate_units`
+   (`apps/products/services/bulk_generate.py`) calls
+   `SerializedInventoryService.generate()` — i.e. the same `allocate_serial`
+   advisory-lock path the single-unit endpoint uses — `quantity` times inside one
+   `transaction.atomic`. The wizard shows a **preview** of the next serial via
+   `GET /products/label-batches/next-serial/?variant=` (`next_serial_preview`,
+   no lock); the real value is assigned under the lock at generation time.
+   `HEXAGARE_SERIAL_PREFIX` stays env-config, not a per-batch input.
+2. **All-or-nothing.** Batch row + all `quantity` `SerializedUnit` rows +
+   their `OPENING` ledger rows commit together or not at all. On any failure the
+   whole block rolls back and no render task is enqueued (§11 "Transaction
+   Safety": `Created: 0 / Status: Failed`). A `MAX_QUANTITY` cap (5000) bounds
+   the transaction.
+3. **`LabelBatch` + `LabelBatchItem` are the history table.** `LabelBatch` holds
+   the request (variant, location, quantity, `initial_status`, `label_size`,
+   `barcode_type`, the optional label-content flags + `custom_text`), the render
+   state (`status` PENDING/READY/FAILED, `pdf_file` on `STORAGES["default"]`,
+   `pdf_generated_at`, `error_message`), and the units via a `LabelBatchItem`
+   M2M-through. Batches and their units are created only through the API and are
+   never edited (admin registers them view-only).
+4. **The PDF renders in a Celery task, enqueued on commit.**
+   `render_label_pdf` (`apps/products/tasks.py`) is dispatched by
+   `transaction.on_commit`. Success → `pdf_file` saved, `status=READY`. Any
+   exception → `status=FAILED` + `error_message`, task returns (no retry); the
+   units are untouched and an operator re-runs via
+   `POST /products/label-batches/{id}/regenerate/` (§11 "Reprint labels" /
+   "Generation history").
+5. **ReportLab, not WeasyPrint.** `apps/products/services/labels.py`
+   (`build_label_pdf`) draws the grid straight from the `LabelSize` with
+   ReportLab's canvas + its vector Code 128. Pure-Python wheels — the slim image
+   needs no Pango/Cairo system packages. `reportlab==4.4.3` added to
+   `requirements.txt`; the `celery-worker` / `celery-beat` images (same
+   Dockerfile, separate images) must be rebuilt alongside `backend`.
+6. **Barcode types: Code 128 only this phase.** §11 also lists EAN-13 / UPC / QR,
+   but the serial string is not valid EAN/UPC data and QR needs another
+   dependency. `LabelBatch.barcode_type` is stored (default `code128`) so the set
+   can grow without a schema change.
+7. **RBAC.** Generate / regenerate need `serials.manage`; reading history and the
+   `pdf` / `next-serial` endpoints need `serials.view`. No new codename. The
+   authenticated PDF download is `GET /products/label-batches/{id}/pdf/`
+   (streamed through `BinaryRenderer`, like the Phase 3 barcode); `pdf_url` in
+   the serializer is a storage-relative convenience.
+
+**Consequences.** Serial identity stays a single-owner invariant — the wizard
+never lets an operator pick or collide a serial. Unit creation and PDF rendering
+fail independently, matching the spec. The label renderer is a plain function
+over a `LabelBatch`, unit-testable without a browser engine, and the deployment
+image is unchanged apart from one pip package. If EAN-13 / UPC / QR or
+operator-set start serials are needed later, they are additive (a new
+`barcode_type` value; a new allocator mode) — revisit with a follow-up ADR.
+Advisory-lock namespace `1001` is unchanged (bulk generation reuses
+`allocate_serial`, it does not add a lock).

@@ -235,3 +235,75 @@ and the event history — everything the Phase 6 scanner PWA needs from one call
 
 `PUT` / `PATCH` / `DELETE` are not exposed — serials are immutable and status
 moves only via `transition` (or `SerializedInventoryService` from Phase 4).
+
+---
+
+## Bulk generation & label PDFs (Phase 5)
+
+Generate many units of one variant at once and get a printable label sheet.
+Built in `apps/products` (`services/bulk_generate.py`, `services/labels.py`,
+`tasks.py`); ADR-010; `HEXAGARE_FEATURES.md` §10–11.
+
+### `LabelBatch` / `LabelBatchItem`
+
+`LabelBatch` is the **history row** for one generation run — the request
+(`variant`, `location`, `quantity`, `initial_status`, `label_size`,
+`barcode_type`, the `include_*` label-content flags + `custom_text`), the PDF
+render state (`status` `PENDING`/`READY`/`FAILED`, `pdf_file` on
+`STORAGES["default"]`, `pdf_generated_at`, `error_message`), and its units via
+the `LabelBatchItem` M2M-through. Created only through the API; never edited
+(admin is view-only), same as `SerializedUnit`.
+
+### Flow
+
+`bulk_generate_units(*, variant, location, quantity, initial_status, label_size,
+barcode_type, label_content, actor)` — **one `transaction.atomic`**:
+
+1. create the `LabelBatch` (`status=PENDING`);
+2. call `SerializedInventoryService.generate()` `quantity` times — each
+   allocates its serial under the **same per-variant advisory lock** as the
+   single-unit path (`allocate_serial`, `MAX(sequence)+1`) and writes the
+   `OPENING` ledger row;
+3. `bulk_create` the `LabelBatchItem` rows;
+4. `transaction.on_commit(…)` enqueues `render_label_pdf` **after** the commit.
+
+**All-or-nothing** (§11 "Transaction Safety"): any failure rolls the whole block
+back — no batch, no units, no ledger rows, no render task. `quantity` is capped
+at `LabelBatch.MAX_QUANTITY` (5000).
+
+`render_label_pdf` (Celery) renders with `build_label_pdf` and stores the PDF.
+On failure it sets `status=FAILED` + `error_message` and returns — the units
+stay; an operator re-runs `POST …/label-batches/{id}/regenerate/`.
+
+### Starting serial is a preview, not an input
+
+§10/§11 mention "set starting serial / prefix", but serials stay
+allocator-owned (ADR-008). The wizard shows
+`GET …/label-batches/next-serial/?variant=<id>` (`next_serial_preview`, **no
+lock**); the real serial is assigned under the lock during generation.
+`HEXAGARE_SERIAL_PREFIX` remains env config.
+
+### Label rendering
+
+`apps/products/services/labels.py:build_label_pdf(batch) -> bytes` uses
+**ReportLab** (ADR-010 — not WeasyPrint; pure-Python, no system libs). The grid
+comes straight from the `LabelSize` (`columns`×`rows`, `margin_mm`, `gutter_mm`,
+per-label `width_mm`×`height_mm`, `orientation`); a 1×1 size prints one label per
+page (thermal roll), anything larger tiles on A4. Each label draws the
+`HEXAGARE` header, the enabled content rows, the serial, and a **vector Code 128**
+of the serial. Barcode type is Code 128 only this phase (`barcode_type` stored
+for forward-compatibility).
+
+### API surface (`/api/v1/products/label-batches/`)
+
+| Route | Method | Permission | Purpose |
+|---|---|---|---|
+| `` | GET | `serials.view` | Generation history. Filters: `?variant=` `?product=` `?location=` `?status=`. |
+| `` | POST | `serials.manage` | Bulk generate: `{variant, location, quantity, label_size, initial_status?, barcode_type?, include_*?, custom_text?}`. All-or-nothing; returns the `PENDING` batch. |
+| `{id}/` | GET | `serials.view` | One batch + `serials` list. Poll `status` for `PENDING → READY`/`FAILED`. |
+| `{id}/regenerate/` | POST | `serials.manage` | Re-render the PDF (units untouched). |
+| `{id}/pdf/` | GET | `serials.view` | Download the rendered sheet (`application/pdf` via `BinaryRenderer`); 400 until `READY`. |
+| `next-serial/?variant=` | GET | `serials.view` | Preview the serial the next allocation will produce. |
+
+`initial_status` must be an initial status (`GENERATED` or `AVAILABLE`), same
+rule as single-unit `create_unit`.

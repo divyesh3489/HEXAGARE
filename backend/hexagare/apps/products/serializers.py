@@ -15,6 +15,7 @@ from apps.inventory.models import Location
 
 from .models import (
     Category,
+    LabelBatch,
     LabelSize,
     Product,
     ProductAttribute,
@@ -24,6 +25,7 @@ from .models import (
     SerializedUnit,
     SerializedUnitEvent,
 )
+from .services.bulk_generate import bulk_generate_units
 from .services.serial_numbers import create_unit, transition_unit
 from .services.sku import is_sku_available, suggest_sku
 
@@ -584,3 +586,152 @@ class SerializedUnitTransitionSerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         return SerializedUnitDetailSerializer(instance, context=self.context).data
+
+
+# --------------------------------------------------------------------------- #
+# Bulk generation + label batches (Phase 5)
+# --------------------------------------------------------------------------- #
+_LABEL_CONTENT_FLAGS = (
+    "include_product_name",
+    "include_variant",
+    "include_sku",
+    "include_mrp",
+    "include_selling_price",
+)
+
+
+class LabelBatchSerializer(serializers.ModelSerializer):
+    """History row for ``GET /products/label-batches/`` and the poll target for
+    ``GET /products/label-batches/{id}/`` (watch ``status`` move
+    ``PENDING -> READY`` / ``FAILED``)."""
+
+    variant_sku = serializers.CharField(source="variant.sku", read_only=True)
+    product_id = serializers.IntegerField(source="variant.product_id", read_only=True)
+    product_name = serializers.CharField(source="variant.product.name", read_only=True)
+    location_name = serializers.CharField(source="location.name", read_only=True)
+    label_size_code = serializers.CharField(source="label_size.code", read_only=True)
+    label_size_name = serializers.CharField(source="label_size.name", read_only=True)
+    unit_count = serializers.IntegerField(read_only=True)
+    pdf_url = serializers.SerializerMethodField()
+    created_by_email = serializers.CharField(source="created_by.email", read_only=True)
+
+    class Meta:
+        model = LabelBatch
+        fields = [
+            "id",
+            "variant",
+            "variant_sku",
+            "product_id",
+            "product_name",
+            "location",
+            "location_name",
+            "quantity",
+            "unit_count",
+            "initial_status",
+            "label_size",
+            "label_size_code",
+            "label_size_name",
+            "barcode_type",
+            "include_product_name",
+            "include_variant",
+            "include_sku",
+            "include_mrp",
+            "include_selling_price",
+            "custom_text",
+            "status",
+            "pdf_url",
+            "pdf_generated_at",
+            "error_message",
+            "created_by",
+            "created_by_email",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_pdf_url(self, obj) -> str | None:
+        # Storage-relative, like ``ProductImageSerializer.get_image_url`` -- an
+        # absolute S3 URL in staging/production, ``/media/...`` in development.
+        # The authenticated download is ``GET {id}/pdf/``; this is a convenience.
+        return obj.pdf_file.url if obj.pdf_file else None
+
+
+class LabelBatchDetailSerializer(LabelBatchSerializer):
+    serials = serializers.SerializerMethodField()
+
+    class Meta(LabelBatchSerializer.Meta):
+        fields = LabelBatchSerializer.Meta.fields + ["serials"]
+
+    def get_serials(self, obj) -> list[str]:
+        return list(
+            obj.units.order_by("sequence").values_list("serial_number", flat=True)
+        )
+
+
+class LabelBatchCreateSerializer(serializers.Serializer):
+    """Input for ``POST /products/label-batches/`` -- the bulk-generate endpoint.
+
+    Serial numbers are allocated by the service (ADR-010); there is no
+    ``starting_serial`` field. Use ``GET /products/label-batches/next-serial/``
+    for the preview.
+    """
+
+    variant = serializers.PrimaryKeyRelatedField(queryset=ProductVariant.objects.all())
+    location = serializers.PrimaryKeyRelatedField(queryset=Location.objects.all())
+    quantity = serializers.IntegerField(
+        min_value=1, max_value=LabelBatch.MAX_QUANTITY
+    )
+    initial_status = serializers.ChoiceField(
+        choices=SerializedUnit.Status.choices, required=False
+    )
+    label_size = serializers.PrimaryKeyRelatedField(queryset=LabelSize.objects.all())
+    barcode_type = serializers.ChoiceField(
+        choices=LabelBatch.BarcodeType.choices, required=False
+    )
+    include_product_name = serializers.BooleanField(required=False)
+    include_variant = serializers.BooleanField(required=False)
+    include_sku = serializers.BooleanField(required=False)
+    include_mrp = serializers.BooleanField(required=False)
+    include_selling_price = serializers.BooleanField(required=False)
+    custom_text = serializers.CharField(
+        max_length=120, required=False, allow_blank=True
+    )
+
+    def validate_initial_status(self, value):
+        if value and value not in SerializedUnit.INITIAL_STATUSES:
+            raise serializers.ValidationError(
+                f"A new unit must start as one of "
+                f"{sorted(SerializedUnit.INITIAL_STATUSES)}."
+            )
+        return value
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        content = {
+            flag: validated_data[flag]
+            for flag in _LABEL_CONTENT_FLAGS
+            if flag in validated_data
+        }
+        if "custom_text" in validated_data:
+            content["custom_text"] = validated_data["custom_text"]
+        return bulk_generate_units(
+            variant=validated_data["variant"],
+            location=validated_data["location"],
+            quantity=validated_data["quantity"],
+            initial_status=validated_data.get("initial_status"),
+            label_size=validated_data["label_size"],
+            barcode_type=validated_data.get(
+                "barcode_type", LabelBatch.BarcodeType.CODE128
+            ),
+            label_content=content,
+            actor=getattr(request, "user", None),
+        )
+
+    def to_representation(self, instance):
+        return LabelBatchDetailSerializer(instance, context=self.context).data
+
+
+class NextSerialSerializer(serializers.Serializer):
+    """Result of ``GET /products/label-batches/next-serial/?variant=<id>``."""
+
+    serial_number = serializers.CharField()
+    sequence = serializers.IntegerField()

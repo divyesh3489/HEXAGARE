@@ -2,6 +2,8 @@ from django.contrib import admin
 
 from .models import (
     Category,
+    LabelBatch,
+    LabelBatchItem,
     LabelSize,
     Product,
     ProductAttribute,
@@ -97,6 +99,41 @@ class SerializedUnitAdmin(admin.ModelAdmin):
     search_fields = ["serial_number", "variant__sku", "variant__product__name"]
     list_select_related = ["variant", "variant__product", "location"]
     inlines = [SerializedUnitEventInline]
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class LabelBatchItemInline(admin.TabularInline):
+    model = LabelBatchItem
+    extra = 0
+    can_delete = False
+    fields = ["serialized_unit"]
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(LabelBatch)
+class LabelBatchAdmin(admin.ModelAdmin):
+    """View-only: bulk-generation history. Batches (and their units) are created
+    through the API in one atomic block; the PDF renders asynchronously."""
+
+    list_display = ["id", "variant", "quantity", "location", "status", "created_at"]
+    list_filter = ["status", "location", "barcode_type"]
+    search_fields = ["variant__sku", "variant__product__name", "id"]
+    list_select_related = ["variant", "variant__product", "location", "label_size"]
+    inlines = [LabelBatchItemInline]
 
     def get_readonly_fields(self, request, obj=None):
         return [f.name for f in self.model._meta.fields]
