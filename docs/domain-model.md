@@ -179,7 +179,9 @@ List filters: `?status=` `?location=` `?variant=` `?product=` `?search=` (serial
 
 ## Inventory
 
-`Location` built in Phase 3 (ADR-007); the ledger is Phase 4.
+`Location` built in Phase 3 (ADR-007); the stock ledger in Phase 4 (ADR-009).
+Full detail — bucket model, services, the `transition`-endpoint gap, transfer
+lifecycle, alert rules — in `inventory-ledger.md`.
 
 ### Models (`apps/inventory/models.py`)
 
@@ -188,15 +190,73 @@ List filters: `?status=` `?location=` `?variant=` `?product=` `?search=` (serial
   only, never branched on**), `is_active`, timestamps. Seed rows
   **Warehouse / Amazon / Offline** created idempotently via a `post_migrate` hook
   (`apps/inventory/bootstrap.py`).
+- **`InventoryTransaction`** — the append-only stock ledger. One row = one signed
+  change to a `(variant, location, status)` bucket: `reference` (UUID grouping
+  the −1/+1 pair of a move), `kind`, `variant` (`PROTECT`), `location`
+  (`PROTECT`), `status` (a `SerializedUnit.Status` value), `quantity` (∈ ℤ,
+  never 0), optional `serialized_unit` (`PROTECT`), `note`, `actor`,
+  `created_at`. `save()` refuses post-creation edits; `delete()` always raises.
+- **`InventoryBalance`** — rebuildable read cache: `quantity`
+  (`PositiveIntegerField`) per `(variant, location, status)`
+  (`UniqueConstraint`). Written only by `InventoryService`; reconstructable via
+  `rebuild_balances()`.
+- **`StockLevelPolicy`** — `variant` (`CASCADE`), optional `location` (`CASCADE`;
+  blank = the variant's total across all locations), `min_quantity`,
+  `max_quantity` (nullable), `is_active`. Partial unique constraints keep one
+  global policy and one policy per location per variant. Drives the alerts.
+- **`StockTransfer`** — `from_location` / `to_location` (`PROTECT`), `status`
+  (`OPEN` / `COMPLETED` / `CANCELLED`), `reference` (UUID), `note`,
+  `created_by`, timestamps, `completed_at`. **`StockTransferLine`** — `transfer`
+  (`CASCADE`) × `serialized_unit` (`PROTECT`), `received`, unique per pair.
+
+### Services
+
+- **`InventoryService`** (`apps/inventory/services/ledger.py`) — the **only**
+  writer of `InventoryTransaction` / `InventoryBalance`: `record`, `move_unit`
+  (the −1/+1 pair), `opening`, `adjust`, `rebuild_balances`. Every method is
+  atomic and locks the balance row; a move that would go negative is refused.
+- **`SerializedInventoryService`** (`apps/products/services/serialized_inventory.py`)
+  — the **only** path that changes a serialized unit's status as a business
+  action: `generate`, `reserve`, `release`, `start_transfer`,
+  `complete_transfer`, `cancel_transfer`, `sell`, `return_unit`, `damage`,
+  `lose`, `restore`, `cancel`. Each wraps Phase 3's `transition_unit` **and** the
+  ledger in one atomic block. `create_unit` now also emits an `OPENING` ledger
+  row.
+- **Alerts** (`apps/inventory/services/alerts.py`) — `compute_alerts()` derives
+  `out_of_stock` / `low_stock` / `overstock` from `InventoryBalance` vs
+  `StockLevelPolicy`, plus `balance_mismatch` when the cache disagrees with the
+  live unit counts. Nothing stored.
+
+### The `transition`-endpoint gap (intentional, ADR-009)
+
+`POST /products/serialized-units/{id}/transition/` (Phase 3) still applies a
+status-only move and writes **no** ledger row — it is for corrections. A move
+with stock meaning made through it leaves `InventoryBalance` stale until
+`manage.py rebuild_inventory_balances` runs; `/inventory/overview/` (live) shows
+`cache_matches: false` and a `balance_mismatch` alert fires meanwhile.
 
 ### API (`/api/v1/inventory/`)
 
-`LocationViewSet` — **read-only** for now (`ReadOnlyModelViewSet`, permission
-`inventory.view`); filters `?kind=` / `?is_active=` / `?search=`. Write actions
-arrive with the Phase 4 ledger.
+- `LocationViewSet` — full CRUD. Reads `inventory.view`; writes
+  `stock_adjustments`. Delete blocked while the location holds units or balances.
+  Filters `?kind=` / `?is_active=` / `?search=`.
+- `balances/` (GET, `inventory.view`) — the cache. `?variant=` `?location=`
+  `?status=` `?product=`.
+- `transactions/` (GET, `inventory.view`) — the ledger. `?variant=` `?location=`
+  `?status=` `?kind=` `?reference=` `?serialized_unit=` `?search=`.
+- `policies/` — CRUD. Reads `inventory.view`; writes `stock_adjustments`.
+- `transfers/` + `{id}/scan/` `{id}/receive/` `{id}/cancel/` (`inventory.transfer`)
+  — the scan-based transfer flow.
+- `overview/` (GET, `inventory.view`) — stock by variant × location × status,
+  counted **live** from the units, with `totals_by_status` and `cache_matches`.
+- `alerts/` (GET, `inventory.view`) — computed alerts; `?variant=` `?location=`
+  `?reconcile=false`.
+- `adjustments/` (POST, `stock_adjustments`) — one manual non-serialized quantity
+  correction.
 
-_Phase 4 adds:_ `InventoryBalance` (read cache), `InventoryTransaction`
-(immutable ledger); `InventoryService` the only writer.
+RBAC: `inventory.view` (reads), `inventory.transfer` (transfers),
+`stock_adjustments` (location / policy / adjustment writes). No new codename this
+phase.
 
 ## Sales and billing
 _Not yet built (Phases 7-8)._ `SalesChannel`, generic `Sale` / `SaleLine`

@@ -26,6 +26,14 @@ export class ApiError extends Error {
   fieldError(field: string): string | undefined {
     return this.fields?.[field]?.[0];
   }
+
+  /** The most useful human message: the first specific field error the server
+   * reported (validation errors carry the real reason there), else `message`
+   * (which for a `validation_error` envelope is just "Validation failed."). */
+  get detail(): string {
+    const first = this.fields && Object.values(this.fields).flat()[0];
+    return first ?? this.message;
+  }
 }
 
 /** Standard list envelope produced by `apps.common.pagination.StandardPagination`. */

@@ -20,7 +20,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from apps.accounts.rbac import ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_WAREHOUSE
-from apps.inventory.models import Location
+from apps.inventory.models import Location, StockLevelPolicy
+from apps.inventory.services.ledger import InventoryService
 from apps.products.models import (
     Category,
     Product,
@@ -161,6 +162,15 @@ DEMO_UNITS = [
     ("HEX-DM-BLACK-001", "amazon", ["AVAILABLE", "AVAILABLE"]),
 ]
 
+# (sku, location code or None for all-locations, min, max) -- so the alerts
+# panel isn't empty in dev. The 11x23 pad has 2 available against a min of 5,
+# so it shows as a low-stock alert.
+DEMO_STOCK_POLICIES = [
+    ("HEX-MP-11X23-001", None, 5, 40),
+    ("HEX-MP-12X32-001", None, 1, 20),
+    ("HEX-DM-BLACK-001", "amazon", 1, 10),
+]
+
 
 class Command(BaseCommand):
     help = "Seed the database with demo users and a demo catalog (idempotent)."
@@ -191,6 +201,10 @@ class Command(BaseCommand):
         attributes = self._seed_attributes()
         products, variants = self._seed_catalog(categories, attributes)
         units = self._seed_units()
+        policies = self._seed_stock_policies()
+        # The opening ledger rows are written as each unit is created; this only
+        # matters if units pre-date the Phase 4 migration on an existing DB.
+        InventoryService.rebuild_balances()
 
         self.stdout.write(self.style.SUCCESS("Demo data ready:"))
         rows = [
@@ -200,6 +214,7 @@ class Command(BaseCommand):
             ("products", products),
             ("variants", variants),
             ("units", units),
+            ("stock policies", policies),
         ]
         for label, counts in rows:
             self.stdout.write(
@@ -317,4 +332,22 @@ class Command(BaseCommand):
             for status in statuses:
                 create_unit(variant=variant, location=location, status=status)
                 result["created"] += 1
+        return result
+
+    # -- stock level policies --------------------------------------
+    def _seed_stock_policies(self) -> dict:
+        result = {"created": 0, "existing": 0}
+        for sku, location_code, minimum, maximum in DEMO_STOCK_POLICIES:
+            variant = ProductVariant.objects.filter(sku=sku).first()
+            if variant is None:
+                continue
+            location = (
+                Location.objects.filter(code=location_code).first() if location_code else None
+            )
+            _, created = StockLevelPolicy.objects.get_or_create(
+                variant=variant,
+                location=location,
+                defaults={"min_quantity": minimum, "max_quantity": maximum},
+            )
+            result["created" if created else "existing"] += 1
         return result

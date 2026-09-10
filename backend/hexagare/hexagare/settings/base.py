@@ -206,6 +206,8 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "ProductStatusEnum": "apps.products.models.Product.Status",
         "SerializedUnitStatusEnum": "apps.products.models.SerializedUnit.Status",
+        "StockTransferStatusEnum": "apps.inventory.models.StockTransfer.Status",
+        "InventoryTransactionKindEnum": "apps.inventory.models.InventoryTransaction.Kind",
     },
 }
 
