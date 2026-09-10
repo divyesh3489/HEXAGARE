@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+db.sqlite3
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Django
+/backend/hexagare/media/
+/backend/hexagare/staticfiles/
+
+# Node (frontend, from Phase 1)
+node_modules/
+dist/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

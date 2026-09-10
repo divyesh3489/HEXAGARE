@@ -1,0 +1,12 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "DJ"]
+ignore = ["B904"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/settings/*.py" = ["F403", "F405"]
+"**/tests/*.py" = ["S101"]
