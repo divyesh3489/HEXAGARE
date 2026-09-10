@@ -6,6 +6,7 @@ Environment-specific configuration lives in ``development.py`` / ``staging.py`` 
 ``settings/__init__.py``). Never put environment-specific config here.
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -46,6 +47,8 @@ DJANGO_APPS = [
 
 THIRD_PARTY_APPS = [
     "rest_framework",
+    "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
     "storages",
 ]
@@ -108,12 +111,17 @@ DATABASES = {
 # --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
+AUTH_USER_MODEL = "accounts.User"
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
+
+# How long a password-reset link stays valid (seconds).
+PASSWORD_RESET_TIMEOUT = env.int("PASSWORD_RESET_TIMEOUT", default=60 * 60 * 24)
 
 # --------------------------------------------------------------------------- #
 # i18n
@@ -157,6 +165,9 @@ STORAGES = {
 # --------------------------------------------------------------------------- #
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        # JWT is the API's primary auth; Session stays for the admin and the
+        # browsable API during development.
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -166,6 +177,18 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": 20,
     "EXCEPTION_HANDLER": "apps.common.exceptions.api_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+# --------------------------------------------------------------------------- #
+# JWT (rest_framework_simplejwt)
+# --------------------------------------------------------------------------- #
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=env.int("JWT_ACCESS_MINUTES", default=60)),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=env.int("JWT_REFRESH_DAYS", default=1)),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
 SPECTACULAR_SETTINGS = {
@@ -195,6 +218,30 @@ CELERY_TIMEZONE = TIME_ZONE
 HEXAGARE_SKU_PREFIX = env("HEXAGARE_SKU_PREFIX", default="HEX")
 HEXAGARE_SERIAL_PREFIX = env("HEXAGARE_SERIAL_PREFIX", default="HX")
 HEXAGARE_SERIAL_PADDING = env.int("HEXAGARE_SERIAL_PADDING", default=6)
+
+# --------------------------------------------------------------------------- #
+# Email / frontend links
+# --------------------------------------------------------------------------- #
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="no-reply@hexagare.local")
+# Base URL of the SPA, used to build links in outbound email (password reset).
+FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://localhost:5173")
+
+# SMTP transport. The backend defaults to console here; development.py keeps
+# that default and production.py switches to SMTP -- either can be overridden
+# with DJANGO_EMAIL_BACKEND. The connection settings below are read whenever the
+# SMTP backend is active, so set them in .env once and every environment uses
+# them. (test.py forces the in-memory backend regardless.)
+EMAIL_BACKEND = env(
+    "DJANGO_EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
+EMAIL_HOST = env("EMAIL_HOST", default="")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
+EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=15)
 
 # --------------------------------------------------------------------------- #
 # Logging
