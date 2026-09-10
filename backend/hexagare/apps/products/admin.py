@@ -8,6 +8,8 @@ from .models import (
     ProductAttributeValue,
     ProductImage,
     ProductVariant,
+    SerializedUnit,
+    SerializedUnitEvent,
 )
 
 
@@ -65,3 +67,67 @@ class LabelSizeAdmin(admin.ModelAdmin):
     list_display = ["name", "code", "width_mm", "height_mm", "columns", "rows", "is_default"]
     list_filter = ["is_active", "orientation"]
     search_fields = ["name", "code"]
+
+
+class SerializedUnitEventInline(admin.TabularInline):
+    model = SerializedUnitEvent
+    extra = 0
+    can_delete = False
+    fields = ["from_status", "to_status", "location", "note", "actor", "created_at"]
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SerializedUnit)
+class SerializedUnitAdmin(admin.ModelAdmin):
+    """View-only.
+
+    A serial number is the permanent physical identity of a unit -- it is never
+    edited or reused, and its variant/sequence must not drift from the serial
+    string. Status and location move only through
+    ``apps.products.services.serial_numbers`` (and, from Phase 4,
+    ``SerializedInventoryService`` so the stock ledger stays in step). So the
+    admin never mutates a unit: create/transition happen via the API.
+    """
+
+    list_display = ["serial_number", "variant", "status", "location", "created_at"]
+    list_filter = ["status", "location"]
+    search_fields = ["serial_number", "variant__sku", "variant__product__name"]
+    list_select_related = ["variant", "variant__product", "location"]
+    inlines = [SerializedUnitEventInline]
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SerializedUnitEvent)
+class SerializedUnitEventAdmin(admin.ModelAdmin):
+    """View-only: the append-only unit history log."""
+
+    list_display = ["unit", "from_status", "to_status", "location", "actor", "created_at"]
+    list_filter = ["to_status", "location"]
+    search_fields = ["unit__serial_number"]
+    list_select_related = ["unit", "location", "actor"]
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

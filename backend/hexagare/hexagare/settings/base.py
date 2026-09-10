@@ -201,6 +201,12 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
     # Schema and docs pages are browsable without auth; tighten if needed.
     "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+    # Several models expose a ``status`` choice field; name each enum explicitly
+    # so schema generation doesn't fall back to hash-suffixed names.
+    "ENUM_NAME_OVERRIDES": {
+        "ProductStatusEnum": "apps.products.models.Product.Status",
+        "SerializedUnitStatusEnum": "apps.products.models.SerializedUnit.Status",
+    },
 }
 
 # --------------------------------------------------------------------------- #

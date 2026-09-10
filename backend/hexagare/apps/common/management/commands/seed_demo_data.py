@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from apps.accounts.rbac import ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_WAREHOUSE
+from apps.inventory.models import Location
 from apps.products.models import (
     Category,
     Product,
@@ -27,6 +28,7 @@ from apps.products.models import (
     ProductAttributeValue,
     ProductVariant,
 )
+from apps.products.services.serial_numbers import create_unit
 
 User = get_user_model()
 
@@ -150,6 +152,15 @@ DEMO_PRODUCTS = [
     },
 ]
 
+# A handful of serialized units so the Product Unit list isn't empty in dev.
+# (sku, location code, [initial status per unit]). Bulk generation is Phase 5;
+# this is deliberately tiny. Skipped for any variant that already has units.
+DEMO_UNITS = [
+    ("HEX-MP-11X23-001", "warehouse", ["AVAILABLE", "AVAILABLE", "GENERATED"]),
+    ("HEX-MP-12X32-001", "warehouse", ["AVAILABLE", "AVAILABLE"]),
+    ("HEX-DM-BLACK-001", "amazon", ["AVAILABLE", "AVAILABLE"]),
+]
+
 
 class Command(BaseCommand):
     help = "Seed the database with demo users and a demo catalog (idempotent)."
@@ -179,6 +190,7 @@ class Command(BaseCommand):
         categories = self._seed_categories()
         attributes = self._seed_attributes()
         products, variants = self._seed_catalog(categories, attributes)
+        units = self._seed_units()
 
         self.stdout.write(self.style.SUCCESS("Demo data ready:"))
         rows = [
@@ -187,6 +199,7 @@ class Command(BaseCommand):
             ("attributes", attributes),
             ("products", products),
             ("variants", variants),
+            ("units", units),
         ]
         for label, counts in rows:
             self.stdout.write(
@@ -287,3 +300,21 @@ class Command(BaseCommand):
                         defaults={"value": value},
                     )
         return prod, var
+
+    # -- serialized units --------------------------------------------
+    def _seed_units(self) -> dict:
+        """Create a few demo units per variant. Idempotent: a variant that
+        already has any unit is left untouched (serials are never reused)."""
+        result = {"created": 0, "existing": 0}
+        for sku, location_code, statuses in DEMO_UNITS:
+            variant = ProductVariant.objects.filter(sku=sku).first()
+            location = Location.objects.filter(code=location_code).first()
+            if variant is None or location is None:
+                continue
+            if variant.serialized_units.exists():
+                result["existing"] += variant.serialized_units.count()
+                continue
+            for status in statuses:
+                create_unit(variant=variant, location=location, status=status)
+                result["created"] += 1
+        return result

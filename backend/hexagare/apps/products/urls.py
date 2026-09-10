@@ -8,6 +8,7 @@ from .views import (
     ProductImageViewSet,
     ProductVariantViewSet,
     ProductViewSet,
+    SerializedUnitViewSet,
     SkuAvailabilityView,
     SkuSuggestionView,
 )
@@ -23,6 +24,7 @@ router.register("attributes", ProductAttributeViewSet, basename="attribute")
 router.register("variants", ProductVariantViewSet, basename="variant")
 router.register("images", ProductImageViewSet, basename="image")
 router.register("label-sizes", LabelSizeViewSet, basename="label-size")
+router.register("serialized-units", SerializedUnitViewSet, basename="serialized-unit")
 router.register("", ProductViewSet, basename="product")
 
 urlpatterns = [
