@@ -39,6 +39,7 @@ export const NAV_GROUPS: NavGroup[] = [
     icon: Package,
     items: [
       { label: "Products", to: "/products", permission: "products.view" },
+      { label: "Categories", to: "/products/categories", permission: "products.view" },
       { label: "Serial Numbers", to: "/products/serial-numbers", permission: "serials.view" },
       { label: "Product Units", to: "/products/units", permission: "serials.view" },
       { label: "Bulk Generate", to: "/products/bulk-generate", permission: "serials.manage" },
