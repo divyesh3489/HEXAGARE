@@ -602,6 +602,128 @@ class SerializedUnit(TimestampedModel):
         return not self.ALLOWED_TRANSITIONS.get(self.status)
 
 
+class LabelBatch(TimestampedModel):
+    """A bulk unit-generation run and the label-sheet PDF it produces (Phase 5).
+
+    The batch row and its ``quantity`` :class:`SerializedUnit` rows are created in
+    **one** atomic block (all-or-nothing -- ``apps.products.services.bulk_generate``);
+    the PDF is rendered *after* that commits by
+    ``apps.products.tasks.render_label_pdf`` and stored on ``STORAGES["default"]``
+    (S3 in staging/production, the local media volume in development). A failed
+    render leaves the units intact and the batch re-renderable via ``regenerate``.
+
+    Serial numbers are **not** taken from user input -- ``bulk_generate`` calls
+    the same advisory-locked allocator the single-unit path uses. See ADR-010 and
+    ``docs/serialized-units.md``.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        READY = "READY", "Ready"
+        FAILED = "FAILED", "Failed"
+
+    class BarcodeType(models.TextChoices):
+        CODE128 = "code128", "Code 128"
+
+    #: Hard ceiling on one batch -- keeps the allocation transaction bounded.
+    MAX_QUANTITY = 5000
+
+    variant = models.ForeignKey(
+        ProductVariant,
+        on_delete=models.PROTECT,
+        related_name="label_batches",
+    )
+    location = models.ForeignKey(
+        "inventory.Location",
+        on_delete=models.PROTECT,
+        related_name="label_batches",
+    )
+    quantity = models.PositiveIntegerField()
+    initial_status = models.CharField(
+        max_length=16,
+        choices=SerializedUnit.Status.choices,
+        help_text="Status every unit in the batch was generated as.",
+    )
+    label_size = models.ForeignKey(
+        LabelSize,
+        on_delete=models.PROTECT,
+        related_name="label_batches",
+    )
+    barcode_type = models.CharField(
+        max_length=16,
+        choices=BarcodeType.choices,
+        default=BarcodeType.CODE128,
+    )
+
+    # -- optional label content (section 11) --------------------------------
+    include_product_name = models.BooleanField(default=True)
+    include_variant = models.BooleanField(default=True)
+    include_sku = models.BooleanField(default=True)
+    include_mrp = models.BooleanField(default=False)
+    include_selling_price = models.BooleanField(default=False)
+    custom_text = models.CharField(max_length=120, blank=True)
+
+    # -- PDF render state -------------------------------------------------
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    pdf_file = models.FileField(upload_to="labels/", blank=True)
+    pdf_generated_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True)
+
+    units = models.ManyToManyField(
+        SerializedUnit,
+        through="LabelBatchItem",
+        related_name="label_batches",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        verbose_name_plural = "label batches"
+
+    def __str__(self) -> str:
+        return f"Batch #{self.pk}: {self.quantity} x {self.variant_id} ({self.status})"
+
+
+class LabelBatchItem(models.Model):
+    """One :class:`SerializedUnit` belonging to a :class:`LabelBatch` (the M2M
+    through model). Rows are written once, when the batch is generated."""
+
+    batch = models.ForeignKey(
+        LabelBatch,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    serialized_unit = models.ForeignKey(
+        SerializedUnit,
+        on_delete=models.PROTECT,
+        related_name="label_batch_items",
+    )
+
+    class Meta:
+        # Units are appended in allocation order, so ``id`` is sequence order.
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["batch", "serialized_unit"],
+                name="uniq_unit_per_label_batch",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.serialized_unit_id} on batch #{self.batch_id}"
+
+
 class SerializedUnitEvent(models.Model):
     """Append-only status-change log for a :class:`SerializedUnit`.
 

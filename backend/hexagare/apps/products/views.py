@@ -7,6 +7,7 @@ Every viewset gates per action via ``get_permissions()``: reads need
 from __future__ import annotations
 
 from django.db.models import Count, Q
+from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers, viewsets
@@ -22,6 +23,7 @@ from apps.common.renderers import BinaryRenderer
 
 from .models import (
     Category,
+    LabelBatch,
     LabelSize,
     Product,
     ProductAttribute,
@@ -31,7 +33,11 @@ from .models import (
 )
 from .serializers import (
     CategorySerializer,
+    LabelBatchCreateSerializer,
+    LabelBatchDetailSerializer,
+    LabelBatchSerializer,
     LabelSizeSerializer,
+    NextSerialSerializer,
     ProductAttributeSerializer,
     ProductDetailSerializer,
     ProductImageSerializer,
@@ -44,6 +50,7 @@ from .serializers import (
     SkuSuggestionSerializer,
 )
 from .services.barcodes import render_code128_png
+from .services.bulk_generate import enqueue_render, next_serial_preview
 from .services.serial_numbers import resolve_unit
 from .services.sku import is_sku_available
 
@@ -343,3 +350,119 @@ class SerializedUnitViewSet(viewsets.ModelViewSet):
                 unit, context=self.get_serializer_context()
             ).data
         )
+
+
+class LabelBatchPDFRenderer(BinaryRenderer):
+    """Streams a batch's rendered label sheet."""
+
+    media_type = "application/pdf"
+    format = "pdf"
+
+
+class LabelBatchViewSet(viewsets.ModelViewSet):
+    """Bulk unit generation + label-sheet PDFs (Phase 5).
+
+    ``POST``                    generate N units of a variant + their label batch
+                                (all-or-nothing); the PDF renders async.
+    ``GET``                     generation history.
+    ``GET {id}/``               one batch -- poll ``status`` for PENDING -> READY.
+    ``POST {id}/regenerate/``   re-render the PDF (units untouched).
+    ``GET {id}/pdf/``           download the rendered sheet (when READY).
+    ``GET next-serial/?variant= `` preview the serial the next allocation yields.
+
+    Reads need ``serials.view``; generate / regenerate need ``serials.manage``.
+    """
+
+    http_method_names = ["get", "post", "head", "options"]
+    filter_backends = [OrderingFilter]
+    ordering_fields = ["created_at", "status", "quantity"]
+
+    def get_permissions(self):
+        if self.action in {"create", "regenerate"}:
+            return [require("serials.manage")()]
+        return [require("serials.view")()]
+
+    def get_queryset(self):
+        qs = (
+            LabelBatch.objects.select_related(
+                "variant__product", "location", "label_size", "created_by"
+            )
+            .annotate(unit_count=Count("items", distinct=True))
+            .order_by("-created_at", "-id")
+        )
+        params = self.request.query_params
+        if variant := params.get("variant"):
+            qs = qs.filter(variant_id=variant)
+        if product := params.get("product"):
+            qs = qs.filter(variant__product_id=product)
+        if status_ := params.get("status"):
+            qs = qs.filter(status=status_)
+        if location := params.get("location"):
+            qs = qs.filter(location_id=location)
+        return qs
+
+    def get_serializer_class(self):
+        return {
+            "list": LabelBatchSerializer,
+            "create": LabelBatchCreateSerializer,
+        }.get(self.action, LabelBatchDetailSerializer)
+
+    def _detail_data(self, batch):
+        batch = self.get_queryset().get(pk=batch.pk)
+        return LabelBatchDetailSerializer(
+            batch, context=self.get_serializer_context()
+        ).data
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("variant", int),
+            OpenApiParameter("product", int),
+            OpenApiParameter("location", int),
+            OpenApiParameter("status", str),
+        ],
+        responses=LabelBatchSerializer,
+    )
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    @extend_schema(
+        request=LabelBatchCreateSerializer, responses=LabelBatchDetailSerializer
+    )
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        batch = serializer.save()
+        return Response(self._detail_data(batch), status=201)
+
+    @extend_schema(request=None, responses=LabelBatchDetailSerializer)
+    @action(detail=True, methods=["post"])
+    def regenerate(self, request, pk=None):
+        batch = self.get_object()
+        enqueue_render(batch)
+        return Response(self._detail_data(batch))
+
+    @extend_schema(responses={200: OpenApiTypes.BINARY})
+    @action(detail=True, methods=["get"], renderer_classes=[LabelBatchPDFRenderer])
+    def pdf(self, request, pk=None):
+        batch = self.get_object()
+        if batch.status != LabelBatch.Status.READY or not batch.pdf_file:
+            raise serializers.ValidationError(
+                "The label PDF for this batch is not ready yet."
+            )
+        with batch.pdf_file.open("rb") as handle:
+            data = handle.read()
+        return Response(data, content_type="application/pdf")
+
+    @extend_schema(
+        parameters=[OpenApiParameter("variant", int, required=True)],
+        responses=NextSerialSerializer,
+    )
+    @action(detail=False, methods=["get"], url_path="next-serial")
+    def next_serial(self, request):
+        variant_id = request.query_params.get("variant")
+        if not variant_id:
+            raise serializers.ValidationError(
+                {"variant": "This query parameter is required."}
+            )
+        variant = get_object_or_404(ProductVariant, pk=variant_id)
+        return Response(next_serial_preview(variant))

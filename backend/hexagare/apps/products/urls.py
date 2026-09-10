@@ -3,6 +3,7 @@ from rest_framework.routers import SimpleRouter
 
 from .views import (
     CategoryViewSet,
+    LabelBatchViewSet,
     LabelSizeViewSet,
     ProductAttributeViewSet,
     ProductImageViewSet,
@@ -25,6 +26,7 @@ router.register("variants", ProductVariantViewSet, basename="variant")
 router.register("images", ProductImageViewSet, basename="image")
 router.register("label-sizes", LabelSizeViewSet, basename="label-size")
 router.register("serialized-units", SerializedUnitViewSet, basename="serialized-unit")
+router.register("label-batches", LabelBatchViewSet, basename="label-batch")
 router.register("", ProductViewSet, basename="product")
 
 urlpatterns = [

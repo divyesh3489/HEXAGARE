@@ -3,6 +3,11 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "@/components/layout/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import {
+  BulkGeneratePage,
+  LabelBatchDetailPage,
+  LabelBatchesPage,
+} from "@/features/bulk-generate";
+import {
   InventoryAlertsPage,
   InventoryOverviewPage,
   StockLedgerPage,
@@ -17,7 +22,6 @@ import { LoginPage } from "./login";
 import { StubPage } from "./stub-page";
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
-  { path: "products/bulk-generate", title: "Bulk Generate Units", phase: "Phase 5" },
   { path: "sales/new", title: "New Bill", phase: "Phase 8" },
   { path: "sales/orders", title: "Orders", phase: "Phase 7" },
   { path: "sales/returns", title: "Returns", phase: "Phase 10" },
@@ -50,6 +54,9 @@ export const router = createBrowserRouter([
           { path: "products/categories", element: <CategoriesPage /> },
           { path: "products/units", element: <SerializedUnitsPanel /> },
           { path: "products/units/:unitId", element: <SerializedUnitDetailPage /> },
+          { path: "products/bulk-generate", element: <BulkGeneratePage /> },
+          { path: "products/bulk-generate/history", element: <LabelBatchesPage /> },
+          { path: "products/bulk-generate/:batchId", element: <LabelBatchDetailPage /> },
           { path: "products/:productId", element: <ProductDetailPage /> },
           { path: "inventory", element: <InventoryOverviewPage /> },
           { path: "inventory/transfers", element: <StockTransfersPage /> },
