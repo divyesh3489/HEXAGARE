@@ -49,9 +49,84 @@ refresh 1 day, rotation + blacklist). Login/refresh keep simplejwt's `{access, r
 (login adds `user`); the list/error envelopes do not apply to token or single-resource responses.
 
 ## Catalog
-_Not yet built (Phase 2)._ `Category` → `Product` → `ProductVariant`
-(SKU + pricing are columns on `ProductVariant` — see ADR-002),
-`ProductAttribute` / `ProductAttributeValue`, `ProductImage`, `LabelSize`.
+
+Built in Phase 2 (`apps/products`). Serialized units, barcodes and bulk generation come in Phases
+3 & 5. See ADR-002 (SKU as a column), ADR-004 (data-driven attributes, advisory SKU suggestion)
+and ADR-005 (product-level default pricing, nullable variant overrides, derived discount).
+
+### Models (`apps/products/models.py`)
+
+- **`Category`** — self-referential tree (`parent` FK, `on_delete=PROTECT`). `slug` auto-filled
+  from `name`; `code` (short token, upper-cased on save, e.g. `MP`) feeds SKU suggestions.
+- **`Product`** — `name`, `code`, `description`, `category` (FK, `PROTECT`), `brand` (plain
+  `CharField`, not a model), `status` (`active` / `inactive` / `draft` / `discontinued`),
+  `hsn_sac`, `weight` (kg), `dimensions` (free text), `tags` (`JSONField` list of strings),
+  `notes`, plus **optional default pricing** — `mrp`, `selling_price` (GST-inclusive),
+  `purchase_price`, `tax_rate` (all nullable). `discount_amount` / `discount_percent` are
+  derived read-only properties.
+- **`ProductVariant`** — `product` FK (`CASCADE`), optional `name` / `code`, **`sku`
+  (`unique`, indexed)**, optional `barcode`. The four price columns — `mrp`, `selling_price`
+  (**GST-inclusive**), `purchase_price`, `tax_rate` (GST %) — are **nullable overrides**:
+  `NULL` inherits the product's default (ADR-005). `is_active` doubles as SKU activation.
+  Derived **properties** (2 dp, `ROUND_HALF_UP`), all from the *effective* figures
+  (variant override → product default → `0`): `effective_mrp` / `effective_selling_price` /
+  `effective_purchase_price` / `effective_tax_rate`; `base_price =
+  effective_selling_price / (1 + effective_tax_rate/100)`;
+  `gst_amount = effective_selling_price − base_price`; `cgst_amount` / `sgst_amount` (even split
+  of `gst_amount`); `discount_amount = max(effective_mrp − effective_selling_price, 0)` and
+  `discount_percent`. The serializer rejects a variant whose effective `selling_price` or `mrp`
+  resolves to `NULL`.
+  **Availability (ADR-006):** `is_active` is the per-variant *intent*; `effective_status`
+  (a `Product.Status` value) and `is_available` (bool) are derived — a product that is
+  `draft` / `inactive` / `discontinued` overrides every variant to that status, and only an
+  `active` product defers to `is_active`. `ProductVariant`'s list endpoint takes `?available=1`;
+  `ProductListSerializer` exposes `available_variant_count` (`0` unless the product is active).
+- **`ProductAttribute`** — reusable variant-property definition (`name`, unique `code`,
+  `is_active`). Global list; adding "Finish" is a row, not a migration.
+- **`ProductAttributeValue`** — join row: `variant` (`CASCADE`) × `attribute` (`PROTECT`) →
+  `value`. Unique per `(variant, attribute)`. This is how size / colour / material are stored —
+  never product-specific columns.
+- **`ProductImage`** — `product` FK (`CASCADE`), optional `variant` FK, `image`
+  (`ImageField`, via `STORAGES["default"]` — S3 in staging/prod, media volume in dev), `alt_text`,
+  `is_primary`, `sort_order`. Requires **Pillow**.
+- **`LabelSize`** — label / sheet geometry for the Phase 5 label-PDF renderer (`width_mm`,
+  `height_mm`, `columns`, `rows`, `margin_mm`, `gutter_mm`, `orientation`, `is_default`). Two
+  defaults (`a4-24up`, `thermal-50x25`) seeded idempotently via a `post_migrate` hook
+  (`apps/products/bootstrap.py`).
+
+### SKU suggestion (`apps/products/services/sku.py`)
+
+- `suggest_sku(category, product, variant_code, attribute_values)` →
+  `<HEXAGARE_SKU_PREFIX>-<CATEGORY CODE>-<VARIANT FRAGMENT>-<NNN>` (e.g. `HEX-MP-11X23-001`).
+  Fragment falls back category code → name initials, variant code → attribute values → product
+  code / initials. The 3-digit sequence starts past the highest existing value on the same stem
+  and increments past collisions.
+- `is_sku_available(sku, exclude_variant_id=None)` — case-insensitive.
+- **Advisory only** (ADR-004): no advisory lock. The `ProductVariant.sku` unique constraint plus
+  the serializer's availability check are the guard; a suggestion race just yields a
+  `validation_error` envelope and a retry.
+
+### API (`/api/v1/products/`)
+
+`SimpleRouter` viewsets — `` (products), `categories/`, `attributes/`, `variants/`, `images/`,
+`label-sizes/` — plus `sku/suggest/` (POST) and `sku/check/` (GET). Every viewset gates per
+action via `get_permissions()`: `products.view` for `list` / `retrieve`, `products.manage` for
+writes. `ProductViewSet` uses a light list serializer (name, category, brand, status,
+`variant_count`, price range, primary image) and a detail serializer with nested read-only
+`variants` + `images`; filters: `?category=` / `?status=` / `?brand=` / `?search=`.
+`ProductVariantSerializer` accepts nested writable `attribute_values`, auto-fills `sku` when
+blank, takes the four price columns as `null`-able overrides (omit or send `null` to inherit the
+product default), and exposes the `effective_*` / `base_price` / `gst_amount` / `discount_*`
+figures read-only. `ProductDetailSerializer` carries the product's own default pricing +
+`discount_amount` / `discount_percent`. Images accept multipart upload; the write field is
+`image`, reads return `image_url`. `image_url`
+is **storage-relative** — an absolute `https://…` S3 URL in staging/production, a root-relative
+`/media/…` path in development (the browser resolves it against its own origin; the Vite dev proxy
+forwards `/media` to the backend). The serializer never calls `request.build_absolute_uri()` —
+behind the dev proxy that host is the container name. An image may be scoped to a single variant
+via its optional `variant` FK (validated to belong to the image's product) or left product-wide
+(`variant` null); `?variant=` filters the list, and the product-detail UI groups the image grid
+by scope and can re-assign an image between scopes.
 
 ## Serialized units
 _Not yet built (Phase 3)._ `SerializedUnit` with immutable serial number and a

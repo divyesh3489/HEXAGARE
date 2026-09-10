@@ -136,7 +136,10 @@ USE_TZ = True
 # --------------------------------------------------------------------------- #
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-MEDIA_URL = "media/"
+# Root-relative so serialized image URLs resolve against the caller's own origin
+# (the Vite dev proxy forwards /media to the backend); S3 storage overrides this
+# with absolute URLs anyway.
+MEDIA_URL = "/media/"
 MEDIA_ROOT = env("MEDIA_ROOT", default=str(BASE_DIR / "media"))
 
 # Object storage. Django 5.1+ removed DEFAULT_FILE_STORAGE in favour of the
