@@ -58,3 +58,26 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
+
+@layer utilities {
+  /* Sweeping line inside the barcode scanner viewfinder (Phase 6). */
+  @keyframes scanline {
+    0% {
+      transform: translateY(-42%);
+    }
+    50% {
+      transform: translateY(42%);
+    }
+    100% {
+      transform: translateY(-42%);
+    }
+  }
+  .animate-scanline {
+    animation: scanline 2s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-scanline {
+      animation: none;
+    }
+  }
+}

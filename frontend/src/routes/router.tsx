@@ -1,7 +1,10 @@
+import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 
 import { AppShell } from "@/components/layout/app-shell";
+import { PageHeader } from "@/components/page-header";
 import { ProtectedRoute } from "@/components/protected-route";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   BulkGeneratePage,
   LabelBatchDetailPage,
@@ -21,12 +24,23 @@ import { DashboardPage } from "./dashboard";
 import { LoginPage } from "./login";
 import { StubPage } from "./stub-page";
 
+// The scanner pulls in the ZXing decoder (~large); keep it off the main bundle.
+const ScannerPage = lazy(() =>
+  import("@/features/scanner").then((m) => ({ default: m.ScannerPage })),
+);
+
+const scannerFallback = (
+  <div className="mx-auto max-w-md">
+    <PageHeader title="Scan" />
+    <Skeleton className="aspect-square w-full" />
+  </div>
+);
+
 const stubRoutes: { path: string; title: string; phase: string }[] = [
   { path: "sales/new", title: "New Bill", phase: "Phase 8" },
   { path: "sales/orders", title: "Orders", phase: "Phase 7" },
   { path: "sales/returns", title: "Returns", phase: "Phase 10" },
   { path: "sales/invoices", title: "Invoices", phase: "Phase 8" },
-  { path: "barcode/scan", title: "Barcode Scanner", phase: "Phase 6" },
   { path: "purchases/suppliers", title: "Suppliers", phase: "Phase 12" },
   { path: "purchases/orders", title: "Purchase Orders", phase: "Phase 12" },
   { path: "purchases/receive", title: "Receive Stock", phase: "Phase 12" },
@@ -64,6 +78,14 @@ export const router = createBrowserRouter([
           { path: "inventory/transfers/:transferId", element: <StockTransferDetailPage /> },
           { path: "inventory/ledger", element: <StockLedgerPage /> },
           { path: "inventory/alerts", element: <InventoryAlertsPage /> },
+          {
+            path: "barcode/scan",
+            element: (
+              <Suspense fallback={scannerFallback}>
+                <ScannerPage />
+              </Suspense>
+            ),
+          },
           ...stubRoutes.map((route) => ({
             path: route.path,
             element: <StubPage title={route.title} phase={route.phase} />,
