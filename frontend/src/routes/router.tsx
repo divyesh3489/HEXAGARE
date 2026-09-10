@@ -3,13 +3,12 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "@/components/layout/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { CategoriesPage, ProductDetailPage, ProductsPage } from "@/features/products";
-import { SerializedUnitsPanel } from "@/features/serialized-units";
+import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
 import { DashboardPage } from "./dashboard";
 import { LoginPage } from "./login";
 import { StubPage } from "./stub-page";
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
-  { path: "products/units", title: "Product Units", phase: "Phase 3" },
   { path: "products/bulk-generate", title: "Bulk Generate Units", phase: "Phase 5" },
   { path: "inventory", title: "Inventory Overview", phase: "Phase 4" },
   { path: "inventory/transfers", title: "Stock Transfers", phase: "Phase 4" },
@@ -45,8 +44,10 @@ export const router = createBrowserRouter([
           { index: true, element: <DashboardPage /> },
           { path: "products", element: <ProductsPage /> },
           { path: "products/categories", element: <CategoriesPage /> },
-          { path: "products/:productId", element: <ProductDetailPage /> },
+          { path: "products/units", element: <SerializedUnitsPanel /> },
+          { path: "products/units/:unitId", element: <SerializedUnitDetailPage /> },
           { path: "products/serial-numbers", element: <SerializedUnitsPanel /> },
+          { path: "products/:productId", element: <ProductDetailPage /> },
           ...stubRoutes.map((route) => ({
             path: route.path,
             element: <StubPage title={route.title} phase={route.phase} />,

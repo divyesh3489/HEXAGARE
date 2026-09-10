@@ -11,6 +11,8 @@ from decimal import Decimal
 from django.db import transaction
 from rest_framework import serializers
 
+from apps.inventory.models import Location
+
 from .models import (
     Category,
     LabelSize,
@@ -19,7 +21,10 @@ from .models import (
     ProductAttributeValue,
     ProductImage,
     ProductVariant,
+    SerializedUnit,
+    SerializedUnitEvent,
 )
+from .services.serial_numbers import create_unit, transition_unit
 from .services.sku import is_sku_available, suggest_sku
 
 
@@ -389,3 +394,193 @@ class SkuSuggestionSerializer(serializers.Serializer):
             variant_code=data.get("variant_code", ""),
             attribute_values=data.get("attribute_values", []),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Serialized units (Phase 3)
+# --------------------------------------------------------------------------- #
+class SerializedUnitEventSerializer(serializers.ModelSerializer):
+    """A single row of a unit's append-only status-change log."""
+
+    location_name = serializers.CharField(source="location.name", read_only=True)
+    actor_email = serializers.CharField(source="actor.email", read_only=True)
+
+    class Meta:
+        model = SerializedUnitEvent
+        fields = [
+            "id",
+            "from_status",
+            "to_status",
+            "location",
+            "location_name",
+            "note",
+            "actor",
+            "actor_email",
+            "created_at",
+        ]
+
+
+class VariantPricingSerializer(serializers.Serializer):
+    """The resolved money figures for a variant (rule 4: Price + GST).
+
+    Bound to a ``ProductVariant`` instance -- every field reads one of its
+    ``effective_*`` / derived properties.
+    """
+
+    effective_selling_price = serializers.DecimalField(max_digits=12, decimal_places=2)
+    effective_mrp = serializers.DecimalField(max_digits=12, decimal_places=2)
+    effective_purchase_price = serializers.DecimalField(max_digits=12, decimal_places=2)
+    effective_tax_rate = serializers.DecimalField(max_digits=5, decimal_places=2)
+    base_price = serializers.DecimalField(max_digits=12, decimal_places=2)
+    gst_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    cgst_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    sgst_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    discount_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    discount_percent = serializers.DecimalField(max_digits=5, decimal_places=2)
+
+
+class SerializedUnitListSerializer(serializers.ModelSerializer):
+    """Flat row for the Product Unit list."""
+
+    location_name = serializers.CharField(source="location.name", read_only=True)
+    location_code = serializers.CharField(source="location.code", read_only=True)
+    variant_id = serializers.IntegerField(source="variant.id", read_only=True)
+    sku = serializers.CharField(source="variant.sku", read_only=True)
+    variant_name = serializers.CharField(source="variant.name", read_only=True)
+    product_id = serializers.IntegerField(source="variant.product.id", read_only=True)
+    product_name = serializers.CharField(source="variant.product.name", read_only=True)
+
+    class Meta:
+        model = SerializedUnit
+        fields = [
+            "id",
+            "serial_number",
+            "sequence",
+            "status",
+            "location",
+            "location_name",
+            "location_code",
+            "variant_id",
+            "sku",
+            "variant_name",
+            "product_id",
+            "product_name",
+            "created_at",
+        ]
+
+
+class SerializedUnitDetailSerializer(SerializedUnitListSerializer):
+    """The full chain (unit -> SKU -> variant -> product) plus pricing, the
+    allowed next statuses and the event history. Also the scan-lookup payload
+    (rule 4)."""
+
+    product = serializers.SerializerMethodField()
+    variant = serializers.SerializerMethodField()
+    pricing = VariantPricingSerializer(source="variant", read_only=True)
+    allowed_transitions = serializers.ListField(
+        child=serializers.CharField(), read_only=True
+    )
+    events = SerializedUnitEventSerializer(many=True, read_only=True)
+    purchase_cost = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True
+    )
+
+    class Meta(SerializedUnitListSerializer.Meta):
+        fields = SerializedUnitListSerializer.Meta.fields + [
+            "product",
+            "variant",
+            "pricing",
+            "purchase_cost",
+            "allowed_transitions",
+            "events",
+            "updated_at",
+        ]
+
+    def get_product(self, obj) -> dict:
+        p = obj.variant.product
+        return {
+            "id": p.id,
+            "name": p.name,
+            "code": p.code,
+            "category_id": p.category_id,
+            "category_name": p.category.name,
+        }
+
+    def get_variant(self, obj) -> dict:
+        v = obj.variant
+        return {
+            "id": v.id,
+            "sku": v.sku,
+            "name": v.name,
+            "code": v.code,
+            "effective_status": v.effective_status,
+        }
+
+
+class SerializedUnitCreateSerializer(serializers.Serializer):
+    """Input for ``POST /products/serialized-units/`` -- one unit at a time.
+
+    Bulk generation + label PDFs land in Phase 5.
+    """
+
+    variant = serializers.PrimaryKeyRelatedField(queryset=ProductVariant.objects.all())
+    location = serializers.PrimaryKeyRelatedField(queryset=Location.objects.all())
+    status = serializers.ChoiceField(
+        choices=SerializedUnit.Status.choices, required=False
+    )
+    purchase_cost = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("0"),
+    )
+
+    def validate_status(self, value):
+        if value and value not in SerializedUnit.INITIAL_STATUSES:
+            raise serializers.ValidationError(
+                f"A new unit must start as one of "
+                f"{sorted(SerializedUnit.INITIAL_STATUSES)}."
+            )
+        return value
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        return create_unit(
+            variant=validated_data["variant"],
+            location=validated_data["location"],
+            status=validated_data.get("status"),
+            purchase_cost=validated_data.get("purchase_cost"),
+            actor=getattr(request, "user", None),
+        )
+
+    def to_representation(self, instance):
+        return SerializedUnitDetailSerializer(instance, context=self.context).data
+
+
+class SerializedUnitTransitionSerializer(serializers.Serializer):
+    """Input for ``POST /products/serialized-units/{id}/transition/``.
+
+    A status-only move along ``SerializedUnit.ALLOWED_TRANSITIONS`` -- it does
+    not touch the stock ledger (Phase 4). ``location`` may be set at the same
+    time (e.g. an ``IN_TRANSIT`` unit arriving as ``AVAILABLE`` elsewhere).
+    """
+
+    status = serializers.ChoiceField(choices=SerializedUnit.Status.choices)
+    location = serializers.PrimaryKeyRelatedField(
+        queryset=Location.objects.all(), required=False, allow_null=True
+    )
+    note = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+    def save(self, **kwargs):
+        request = self.context.get("request")
+        return transition_unit(
+            self.context["unit"],
+            to_status=self.validated_data["status"],
+            location=self.validated_data.get("location"),
+            actor=getattr(request, "user", None),
+            note=self.validated_data.get("note", ""),
+        )
+
+    def to_representation(self, instance):
+        return SerializedUnitDetailSerializer(instance, context=self.context).data

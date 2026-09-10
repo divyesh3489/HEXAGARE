@@ -9,7 +9,13 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 
-from apps.products.models import Category, Product, ProductAttributeValue, ProductVariant
+from apps.products.models import (
+    Category,
+    Product,
+    ProductAttributeValue,
+    ProductVariant,
+    SerializedUnit,
+)
 
 User = get_user_model()
 
@@ -50,6 +56,13 @@ class SeedDemoDataTests(TestCase):
         large = ProductVariant.objects.get(sku="HEX-MP-12X32-001")
         self.assertEqual(large.selling_price, Decimal("1770.00"))
 
+        # A few serialized units, each with an opening event.
+        self.assertEqual(SerializedUnit.objects.count(), 7)
+        self.assertEqual(variant.serialized_units.count(), 3)
+        unit = variant.serialized_units.order_by("sequence").first()
+        self.assertEqual(unit.serial_number, "HX11X23-000001")
+        self.assertEqual(unit.events.count(), 1)
+
     def test_is_idempotent(self):
         _run()
         _run()
@@ -58,6 +71,8 @@ class SeedDemoDataTests(TestCase):
         self.assertEqual(Product.objects.count(), 3)
         self.assertEqual(ProductVariant.objects.count(), 6)
         self.assertEqual(ProductAttributeValue.objects.count(), 6)
+        # Units are not regenerated on a second run (serials are never reused).
+        self.assertEqual(SerializedUnit.objects.count(), 7)
         # No duplicate group memberships.
         admin = User.objects.get(email="admin@hexagare.test")
         self.assertEqual(admin.groups.filter(name="Admin").count(), 1)

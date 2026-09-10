@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
+from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils.text import slugify
@@ -456,3 +457,186 @@ class LabelSize(TimestampedModel):
 
     def __str__(self) -> str:
         return self.name
+
+
+class SerializedUnit(TimestampedModel):
+    """One physical, individually-tracked unit of a ``ProductVariant``.
+
+    The ``serial_number`` is immutable, globally unique and never reused -- it is
+    allocated by :mod:`apps.products.services.serial_numbers` under a per-variant
+    Postgres advisory lock, formatted as
+    ``<HEXAGARE_SERIAL_PREFIX><variant token>-<zero-padded sequence>``
+    (e.g. ``HXMP1123-000001``). ``sequence`` is the per-variant counter behind
+    that serial; ``(variant, sequence)`` is unique so a serial can never be
+    handed out twice.
+
+    ``status`` moves only along :attr:`ALLOWED_TRANSITIONS` (see sections 14-15
+    of ``HEXAGARE_FEATURES.md`` and ``docs/serialized-units.md``). In Phase 3 the
+    plain ``transition`` endpoint applies a move directly; from Phase 4 the
+    status changes tied to a business action (reserve / transfer / sell / return
+    / damage / lose) must go through ``SerializedInventoryService`` so the stock
+    ledger stays in step. ``location`` and ``status`` are independent fields:
+    an ``IN_TRANSIT`` unit still records the location it is currently at.
+
+    The barcode is **not** stored -- it is the Code128 rendering of
+    ``serial_number``, produced on demand.
+    """
+
+    class Status(models.TextChoices):
+        GENERATED = "GENERATED", "Generated"
+        AVAILABLE = "AVAILABLE", "Available"
+        RESERVED = "RESERVED", "Reserved"
+        IN_TRANSIT = "IN_TRANSIT", "In transit"
+        SOLD = "SOLD", "Sold"
+        RETURNED = "RETURNED", "Returned"
+        DAMAGED = "DAMAGED", "Damaged"
+        LOST = "LOST", "Lost"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    #: Which statuses each status may move to. An empty set means terminal.
+    #: Keep this in sync with the table in ``docs/serialized-units.md``.
+    ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+        Status.GENERATED: {Status.AVAILABLE, Status.CANCELLED},
+        Status.AVAILABLE: {
+            Status.RESERVED,
+            Status.IN_TRANSIT,
+            Status.DAMAGED,
+            Status.LOST,
+        },
+        Status.RESERVED: {Status.AVAILABLE, Status.SOLD, Status.CANCELLED},
+        Status.IN_TRANSIT: {Status.AVAILABLE, Status.SOLD, Status.LOST},
+        Status.SOLD: {Status.RETURNED},
+        Status.RETURNED: {Status.AVAILABLE, Status.DAMAGED},
+        Status.DAMAGED: {Status.AVAILABLE, Status.LOST},
+        Status.LOST: {Status.AVAILABLE},
+        Status.CANCELLED: set(),
+    }
+
+    #: Statuses a unit may hold when it is first generated.
+    INITIAL_STATUSES = {Status.GENERATED, Status.AVAILABLE}
+
+    variant = models.ForeignKey(
+        ProductVariant,
+        on_delete=models.PROTECT,
+        related_name="serialized_units",
+    )
+    serial_number = models.CharField(max_length=64, unique=True, editable=False)
+    sequence = models.PositiveIntegerField(
+        editable=False,
+        help_text="Per-variant counter behind the serial number.",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.GENERATED,
+        db_index=True,
+    )
+    location = models.ForeignKey(
+        "inventory.Location",
+        on_delete=models.PROTECT,
+        related_name="serialized_units",
+    )
+    purchase_cost = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["variant", "sequence"],
+                name="uniq_sequence_per_variant",
+            ),
+        ]
+
+    #: Fields fixed for the life of the row: the serial number is a permanent
+    #: physical identity and its variant/sequence must never drift from it.
+    IMMUTABLE_FIELDS = ("variant_id", "serial_number", "sequence")
+
+    def __str__(self) -> str:
+        return self.serial_number
+
+    def save(self, *args, **kwargs):
+        """Block any edit to an immutable field once the row exists.
+
+        The API never updates these (the viewset has no update action) and
+        ``services.serial_numbers`` only ever writes ``status`` / ``location``;
+        this guards the admin and one-off scripts. Skipped when an explicit
+        ``update_fields`` clearly touches none of them (the transition path).
+        """
+        update_fields = kwargs.get("update_fields")
+        touches_immutable = update_fields is None or (
+            {"variant", "serial_number", "sequence"} & set(update_fields)
+        )
+        if self.pk and not self._state.adding and touches_immutable:
+            stored = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if stored is not None:
+                changed = [f for f in self.IMMUTABLE_FIELDS if getattr(self, f) != stored[f]]
+                if changed:
+                    raise ValueError(
+                        f"{', '.join(changed)} cannot be changed on an existing "
+                        f"SerializedUnit (serial numbers are immutable)."
+                    )
+        super().save(*args, **kwargs)
+
+    def can_transition_to(self, new_status: str) -> bool:
+        return new_status in self.ALLOWED_TRANSITIONS.get(self.status, set())
+
+    @property
+    def allowed_transitions(self) -> list[str]:
+        return sorted(self.ALLOWED_TRANSITIONS.get(self.status, set()))
+
+    @property
+    def is_terminal(self) -> bool:
+        return not self.ALLOWED_TRANSITIONS.get(self.status)
+
+
+class SerializedUnitEvent(models.Model):
+    """Append-only status-change log for a :class:`SerializedUnit`.
+
+    Written on creation and on every transition. This is the unit's own audit
+    trail -- distinct from the Phase 4 ``inventory.InventoryTransaction`` stock
+    ledger (ADR-008). Rows are never updated or deleted.
+    """
+
+    unit = models.ForeignKey(
+        SerializedUnit,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    from_status = models.CharField(max_length=16, blank=True)
+    to_status = models.CharField(max_length=16)
+    location = models.ForeignKey(
+        "inventory.Location",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    note = models.CharField(max_length=255, blank=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        arrow = f"{self.from_status or '-'} -> {self.to_status}"
+        return f"{self.unit.serial_number}: {arrow}"

@@ -211,3 +211,76 @@ reinterpreted as "intended once live". A discontinued product's variants are not
 individually revivable — reactivating the product restores each variant's stored
 `is_active`. Nothing enforces hiding draft/inactive variants in the management
 UI itself (you must be able to build a product before publishing it).
+
+---
+
+## ADR-007 — `inventory.Location` created in Phase 3 (ahead of the Phase 4 ledger)
+
+**Status:** Accepted (Phase 3)
+
+**Context.** Phase 3's `SerializedUnit` needs a required `location` FK to
+`apps.inventory.Location` (§9, §16; and the Target Architecture in `CLAUDE.md`).
+The full inventory app — `InventoryBalance`, `InventoryTransaction`,
+`InventoryService`, stock transfers — is Phase 4. Building `SerializedUnit`
+without a real `Location` to point at (a free-text field, or a stub in
+`products`) would contradict "a required `location` FK … no free-text location
+field" and force a messy migration later.
+
+**Decision.** Create a **minimal `inventory.Location`** now: `name` (unique),
+`code` (unique slug), `kind` (`warehouse` / `marketplace` / `retail` / `other` —
+reporting only, never branched on), `is_active`, timestamps. Seed rows
+**Warehouse / Amazon / Offline** via a `post_migrate` hook
+(`apps/inventory/bootstrap.py`), the same reference-data pattern as
+`apps/products/bootstrap.py` (ADR-004). Expose it **read-only** for now
+(`LocationViewSet(ReadOnlyModelViewSet)`, permission `inventory.view`) at
+`/api/v1/inventory/locations/`.
+
+Phase 4 extends this model and app — it does **not** replace them: it adds
+`InventoryBalance` / `InventoryTransaction` / `InventoryService`, the
+`post_migrate` seeding stays, and `LocationViewSet` gains write actions in the
+ledger's context.
+
+**Consequences.** `SerializedUnit.location` is a real FK from day one. The
+`products.0003` migration depends on `inventory.0001`. `inventory.view` (already
+reserved in `rbac.py`) starts being enforced in Phase 3. Nothing in Phase 3
+writes stock balances — `create_unit` / `transition_unit` only touch the unit and
+its event log; wiring unit lifecycle to the ledger is Phase 4's job.
+
+---
+
+## ADR-008 — Per-variant advisory-locked serial sequence; `SerializedUnitEvent` as the unit history log
+
+**Status:** Accepted (Phase 3)
+
+**Context.** Two independent needs:
+1. Serial numbers must be **gapless-by-construction and never reused, per
+   variant**, even under concurrent bulk generation (Phase 5). SKU suggestion's
+   lock-free "retry on collision" approach (ADR-004) is not good enough — a
+   serial sequence can't have a losing racer pick "the next one".
+2. §55 rule 4 (barcode scan) and §8 ("Serial history", "Serial status") require
+   a per-unit history. The Phase 4 `InventoryTransaction` ledger records
+   *quantity movements at a location*, not *what happened to unit X*, and does
+   not exist yet.
+
+**Decision.**
+1. `SerializedUnit.sequence` is a per-variant counter. `allocate_serial(variant)`
+   takes `pg_advisory_xact_lock(1001, variant_id)` inside the creating
+   transaction, reads `MAX(sequence)` for that variant, returns the next value;
+   `create_unit` does allocation + insert + opening event in one
+   `transaction.atomic()`. A `UniqueConstraint(variant, sequence)` is the DB
+   backstop. Different variants never contend (the lock key includes the variant
+   id). No `PUT`/`PATCH`/`DELETE` on units, so rows are not removed and the
+   sequence never rewinds.
+2. Add `SerializedUnitEvent` — append-only (`unit`, `from_status`, `to_status`,
+   `location`, `note`, `actor`, `created_at`), written by `create_unit` and
+   `transition_unit`. It is the unit's audit trail and the "History" a scan
+   returns. It is **separate from, not a replacement for**, the Phase 4
+   `InventoryTransaction`; the two may be cross-linked later but model different
+   things.
+
+**Consequences.** Serial allocation is safe for Phase 5 bulk generation with a
+single lock per batch. The advisory-lock namespace `1001` is reserved for serial
+allocation — pick a different constant for any future advisory lock. History is
+available from Phase 3; Phase 4's ledger adds the quantity side without changing
+the event log. `transition_unit` is the status-only path and writes an event but
+no ledger row — see `serialized-units.md` "Mutation path".

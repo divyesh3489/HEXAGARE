@@ -1,65 +1,74 @@
-import { useEffect, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
-import { ApiError } from "@/api/client";
 import { PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchSerializedUnits, serializedUnitsKey } from "./api";
+import { useDebounced, useLocations, useSerializedUnits } from "./hooks";
+import { statusBadgeVariant } from "./status";
 import { UNIT_STATUSES } from "./types";
 
 const PAGE_SIZE = 20;
 
+const selectClass =
+  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 export function SerializedUnitsPanel() {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState("");
+  const [location, setLocation] = useState("");
   const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
+  const search = useDebounced(searchInput.trim());
 
-  // Debounce the serial-number search.
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(1);
-    }, 300);
-    return () => clearTimeout(handle);
-  }, [searchInput]);
+  const { data: locationsData } = useLocations();
+  const locations = locationsData?.data ?? [];
 
-  const query = { page, pageSize: PAGE_SIZE, search, status };
-  const { data, isPending, isFetching, error, refetch } = useQuery({
-    queryKey: serializedUnitsKey(query),
-    queryFn: () => fetchSerializedUnits(query),
-    placeholderData: keepPreviousData,
-  });
+  const query = useMemo(
+    () => ({
+      page,
+      page_size: PAGE_SIZE,
+      search: search || undefined,
+      status: status || undefined,
+      location: location ? Number(location) : undefined,
+    }),
+    [page, search, status, location],
+  );
 
-  const notReady = error instanceof ApiError && [404, 501].includes(error.status);
+  const { data, isPending, isFetching, error, refetch } = useSerializedUnits(query);
+
   const units = data?.data ?? [];
   const count = data?.meta.count ?? 0;
+
+  const resetPage = () => setPage(1);
 
   return (
     <div>
       <PageHeader
-        title="Serial Numbers"
-        description="Every physical unit, its status and location."
+        title="Product Units"
+        description="Every physical unit — its serial number, status and location."
       />
 
       <div className="mb-4 flex flex-wrap gap-2">
         <Input
           placeholder="Search serial number…"
           value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
+          onChange={(e) => {
+            setSearchInput(e.target.value);
+            resetPage();
+          }}
           className="max-w-xs"
         />
         <select
           value={status}
           onChange={(e) => {
             setStatus(e.target.value);
-            setPage(1);
+            resetPage();
           }}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className={selectClass}
         >
           <option value="">All statuses</option>
           {UNIT_STATUSES.map((s) => (
@@ -68,21 +77,26 @@ export function SerializedUnitsPanel() {
             </option>
           ))}
         </select>
+        <select
+          value={location}
+          onChange={(e) => {
+            setLocation(e.target.value);
+            resetPage();
+          }}
+          className={selectClass}
+        >
+          <option value="">All locations</option>
+          {locations.map((loc) => (
+            <option key={loc.id} value={loc.id}>
+              {loc.name}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {notReady && (
-        <Alert>
-          <AlertTitle>Not available yet</AlertTitle>
-          <AlertDescription>
-            The serialized-units API ships in Phase 3. This panel is wired to the fetch client
-            and will populate once that endpoint exists.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {error && !notReady && (
+      {error && (
         <Alert variant="destructive">
-          <AlertTitle>Couldn’t load serial numbers</AlertTitle>
+          <AlertTitle>Couldn’t load product units</AlertTitle>
           <AlertDescription className="flex flex-col items-start gap-2">
             <span>{error instanceof Error ? error.message : "Unknown error."}</span>
             <Button size="sm" variant="outline" onClick={() => refetch()}>
@@ -124,18 +138,31 @@ export function SerializedUnitsPanel() {
                         colSpan={5}
                         className="px-4 py-12 text-center text-sm text-muted-foreground"
                       >
-                        No serialized units{search || status ? " match these filters" : " yet"}.
+                        No product units
+                        {search || status || location ? " match these filters" : " yet"}.
                       </td>
                     </tr>
                   )}
 
                   {units.map((unit) => (
-                    <tr key={unit.id} className="border-b last:border-0">
-                      <td className="px-4 py-3 font-mono">{unit.serial_number}</td>
-                      <td className="px-4 py-3">{unit.status}</td>
-                      <td className="px-4 py-3">{unit.location ?? "—"}</td>
-                      <td className="px-4 py-3">{unit.sku ?? "—"}</td>
-                      <td className="px-4 py-3">{unit.product ?? "—"}</td>
+                    <tr
+                      key={unit.id}
+                      className="border-b transition-colors last:border-0 hover:bg-muted/50"
+                    >
+                      <td className="px-4 py-3 font-mono">
+                        <Link
+                          to={`/products/units/${unit.id}`}
+                          className="text-primary underline-offset-4 hover:underline"
+                        >
+                          {unit.serial_number}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge variant={statusBadgeVariant(unit.status)}>{unit.status}</Badge>
+                      </td>
+                      <td className="px-4 py-3">{unit.location_name}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{unit.sku}</td>
+                      <td className="px-4 py-3">{unit.product_name}</td>
                     </tr>
                   ))}
                 </tbody>

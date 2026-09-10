@@ -38,6 +38,10 @@ interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
   /** Attach the bearer token and attempt a refresh on 401. Default true. */
   auth?: boolean;
+  /** How to read a successful response body. Default `"json"`; `"blob"` is for
+   * binary endpoints (e.g. the on-demand barcode PNG). Errors are still parsed
+   * as the JSON `{error: {...}}` envelope. */
+  parse?: "json" | "blob";
 }
 
 let refreshInFlight: Promise<string | null> | null = null;
@@ -74,7 +78,7 @@ function ensureRefreshed(): Promise<string | null> {
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { body, auth = true, headers, ...rest } = options;
+  const { body, auth = true, headers, parse = "json", ...rest } = options;
 
   const send = async (): Promise<Response> => {
     const finalHeaders = new Headers(headers);
@@ -112,9 +116,8 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     return undefined as T;
   }
 
-  const payload = await response.json().catch(() => null);
-
   if (!response.ok) {
+    const payload = await response.json().catch(() => null);
     const envelope: ApiErrorBody =
       payload && typeof payload === "object" && "error" in payload
         ? (payload as { error: ApiErrorBody }).error
@@ -122,7 +125,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     throw new ApiError(response.status, envelope);
   }
 
-  return payload as T;
+  if (parse === "blob") {
+    return (await response.blob()) as T;
+  }
+
+  return (await response.json().catch(() => null)) as T;
 }
 
 export const api = {

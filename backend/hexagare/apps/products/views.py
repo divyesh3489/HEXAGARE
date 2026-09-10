@@ -7,8 +7,10 @@ Every viewset gates per action via ``get_permissions()``: reads need
 from __future__ import annotations
 
 from django.db.models import Count, Q
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers, viewsets
+from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
@@ -16,6 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import require
+from apps.common.renderers import BinaryRenderer
 
 from .models import (
     Category,
@@ -24,6 +27,7 @@ from .models import (
     ProductAttribute,
     ProductImage,
     ProductVariant,
+    SerializedUnit,
 )
 from .serializers import (
     CategorySerializer,
@@ -33,8 +37,14 @@ from .serializers import (
     ProductImageSerializer,
     ProductListSerializer,
     ProductVariantSerializer,
+    SerializedUnitCreateSerializer,
+    SerializedUnitDetailSerializer,
+    SerializedUnitListSerializer,
+    SerializedUnitTransitionSerializer,
     SkuSuggestionSerializer,
 )
+from .services.barcodes import render_code128_png
+from .services.serial_numbers import resolve_unit
 from .services.sku import is_sku_available
 
 _VIEW = "products.view"
@@ -219,3 +229,117 @@ class SkuAvailabilityView(APIView):
             sku, exclude_variant_id=int(exclude) if exclude else None
         )
         return Response({"sku": sku, "available": available})
+
+
+class BarcodePNGRenderer(BinaryRenderer):
+    """Streams the on-demand Code128 PNG straight through."""
+
+    media_type = "image/png"
+    format = "png"
+
+
+class SerializedUnitViewSet(viewsets.ModelViewSet):
+    """Serialized units: list / retrieve / create one, transition status,
+    render the on-demand barcode, and resolve a scanned serial to the full
+    chain (rule 4).
+
+    Reads need ``serials.view``; create / transition need ``serials.manage``;
+    ``lookup`` needs ``barcode.scan``.
+    """
+
+    # No PUT/PATCH/DELETE -- serials are immutable and status moves only via
+    # ``transition`` (Phase 3) or ``SerializedInventoryService`` (Phase 4+).
+    http_method_names = ["get", "post", "head", "options"]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ["serial_number"]
+    ordering_fields = ["created_at", "serial_number", "status"]
+
+    def get_permissions(self):
+        if self.action in {"list", "retrieve", "barcode"}:
+            return [require("serials.view")()]
+        if self.action == "lookup":
+            return [require("barcode.scan")()]
+        return [require("serials.manage")()]
+
+    def get_queryset(self):
+        qs = SerializedUnit.objects.select_related(
+            "variant__product__category", "location"
+        )
+        if self.action == "retrieve":
+            qs = qs.prefetch_related("events__location", "events__actor")
+        params = self.request.query_params
+        if status_ := params.get("status"):
+            qs = qs.filter(status=status_)
+        if location := params.get("location"):
+            qs = qs.filter(location_id=location)
+        if variant := params.get("variant"):
+            qs = qs.filter(variant_id=variant)
+        if product := params.get("product"):
+            qs = qs.filter(variant__product_id=product)
+        return qs
+
+    def get_serializer_class(self):
+        return {
+            "list": SerializedUnitListSerializer,
+            "create": SerializedUnitCreateSerializer,
+            "transition": SerializedUnitTransitionSerializer,
+        }.get(self.action, SerializedUnitDetailSerializer)
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("status", str),
+            OpenApiParameter("location", int),
+            OpenApiParameter("variant", int),
+            OpenApiParameter("product", int),
+            OpenApiParameter("search", str, description="Serial number (contains)."),
+        ]
+    )
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    @extend_schema(
+        request=SerializedUnitTransitionSerializer,
+        responses=SerializedUnitDetailSerializer,
+    )
+    @action(detail=True, methods=["post"])
+    def transition(self, request, pk=None):
+        unit = self.get_object()
+        serializer = SerializedUnitTransitionSerializer(
+            data=request.data,
+            context={**self.get_serializer_context(), "unit": unit},
+        )
+        serializer.is_valid(raise_exception=True)
+        unit = serializer.save()
+        return Response(
+            SerializedUnitDetailSerializer(
+                unit, context=self.get_serializer_context()
+            ).data
+        )
+
+    @extend_schema(responses={200: OpenApiTypes.BINARY})
+    @action(detail=True, methods=["get"], renderer_classes=[BarcodePNGRenderer])
+    def barcode(self, request, pk=None):
+        unit = self.get_object()
+        return Response(
+            render_code128_png(unit.serial_number), content_type="image/png"
+        )
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "code",
+                str,
+                required=True,
+                description="Serial number or scanned barcode value.",
+            )
+        ],
+        responses=SerializedUnitDetailSerializer,
+    )
+    @action(detail=False, methods=["get"])
+    def lookup(self, request):
+        unit = resolve_unit(request.query_params.get("code", ""))
+        return Response(
+            SerializedUnitDetailSerializer(
+                unit, context=self.get_serializer_context()
+            ).data
+        )

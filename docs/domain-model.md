@@ -129,12 +129,74 @@ via its optional `variant` FK (validated to belong to the image's product) or le
 by scope and can re-assign an image between scopes.
 
 ## Serialized units
-_Not yet built (Phase 3)._ `SerializedUnit` with immutable serial number and a
-required `location` FK. See `serialized-units.md`.
+
+Built in Phase 3 (`apps/products`). Full detail — serial format, advisory-lock
+reasoning, state machine, mutation path — in `serialized-units.md`. See ADR-008.
+
+### Models (`apps/products/models.py`)
+
+- **`SerializedUnit`** — one physical unit of a `ProductVariant`. `variant` FK
+  (`PROTECT`); **`serial_number`** (`unique`, `editable=False`, immutable, never
+  reused) formatted `<HEXAGARE_SERIAL_PREFIX><variant token>-<sequence>`
+  (e.g. `HX11X23-000001`); `sequence` (per-variant counter, `editable=False`,
+  `UniqueConstraint(variant, sequence)`); `status` (nine-value lifecycle,
+  `db_index`); **`location`** FK → `inventory.Location` (`PROTECT`) — independent
+  of `status`; optional `purchase_cost`; `created_by`. `ALLOWED_TRANSITIONS` is
+  the state machine; `can_transition_to` / `allowed_transitions` / `is_terminal`
+  are helpers. Barcodes are **not** stored (see below).
+- **`SerializedUnitEvent`** — append-only per-unit history (`unit` `CASCADE`,
+  `from_status`, `to_status`, `location`, `note`, `actor`, `created_at`). Written
+  on creation and every transition. Distinct from the Phase 4
+  `InventoryTransaction` ledger (ADR-008).
+
+### Service (`apps/products/services/serial_numbers.py`)
+
+- `allocate_serial(variant) → (serial, sequence)` — per-variant
+  `pg_advisory_xact_lock`, `MAX(sequence)+1`. Must run in a transaction.
+- `create_unit(*, variant, location, status=GENERATED, purchase_cost, actor)` —
+  atomic: allocate + insert + opening event. `status` must be `GENERATED` or
+  `AVAILABLE`. (Bulk generation + label PDFs are Phase 5.)
+- `transition_unit(unit, *, to_status, location=None, actor, note)` — row-locked
+  status move validated against `ALLOWED_TRANSITIONS`, writes an event. **No
+  stock ledger** — Phase 4's `SerializedInventoryService` wraps this + the ledger
+  and becomes the only path for transfer/sell/damage/lose/return.
+- `resolve_unit(code)` — serial **or** scanned-barcode string → the unit
+  (case-insensitive), or `Http404`.
+
+### Barcodes (`apps/products/services/barcodes.py`)
+
+`render_code128_png(data)` — Code128 PNG via python-barcode + Pillow, generated
+**on demand**, streamed through `BinaryRenderer`, never stored.
+
+### API (`/api/v1/products/serialized-units/`)
+
+`SerializedUnitViewSet` (no `PUT`/`PATCH`/`DELETE`): `list` + `retrieve`
+(`serials.view`), `create` one unit (`serials.manage`),
+`POST {id}/transition/` `{status, location?, note?}` (`serials.manage`),
+`GET {id}/barcode/` → PNG (`serials.view`),
+`GET lookup/?code=` → full chain + pricing + history (`barcode.scan`, §55 rule 4).
+List filters: `?status=` `?location=` `?variant=` `?product=` `?search=` (serial).
 
 ## Inventory
-_Not yet built (Phase 4)._ `Location`, `InventoryBalance` (read cache),
-`InventoryTransaction` (immutable ledger). `InventoryService` is the only writer.
+
+`Location` built in Phase 3 (ADR-007); the ledger is Phase 4.
+
+### Models (`apps/inventory/models.py`)
+
+- **`Location`** — generic stock-holding place. `name` (unique), `code` (unique
+  slug), `kind` (`warehouse` / `marketplace` / `retail` / `other` — **reporting
+  only, never branched on**), `is_active`, timestamps. Seed rows
+  **Warehouse / Amazon / Offline** created idempotently via a `post_migrate` hook
+  (`apps/inventory/bootstrap.py`).
+
+### API (`/api/v1/inventory/`)
+
+`LocationViewSet` — **read-only** for now (`ReadOnlyModelViewSet`, permission
+`inventory.view`); filters `?kind=` / `?is_active=` / `?search=`. Write actions
+arrive with the Phase 4 ledger.
+
+_Phase 4 adds:_ `InventoryBalance` (read cache), `InventoryTransaction`
+(immutable ledger); `InventoryService` the only writer.
 
 ## Sales and billing
 _Not yet built (Phases 7-8)._ `SalesChannel`, generic `Sale` / `SaleLine`
