@@ -25,7 +25,8 @@ backend/hexagare/
                      images / LabelSize + SKU service)   (Phase 2);
                      serialized units + on-demand barcode + scan lookup   (Phase 3)
     inventory/       Location (read-only)                (Phase 3, ADR-007);
-                     ledger + balances                   (Phase 4)
+                     stock ledger + balance cache + transfers + alerts
+                     (Phase 4, ADR-009 — see inventory-ledger.md)
     sales/           channel-agnostic orders             (Phase 7)
     billing/         payment / invoice                   (Phase 8)
     integrations/    Amazon import                       (Phase 9)
@@ -52,10 +53,11 @@ SalesChannels once built, `LabelSize` defaults) is seeded on every `migrate` via
 idempotent, dev-only command that adds demo **users** (`admin` / `manager` /
 `cashier` / `warehouse` `@hexagare.test`, password `demo-Passw0rd!`, realigned to
 their role group on every run), a small demo **catalog** (Peripherals tree,
-Size/Colour/Switch attributes, 3 products × 2 variants) and a handful of demo
+Size/Colour/Switch attributes, 3 products × 2 variants), a handful of demo
 **serialized units** (skipped for any variant that already has units — serials
-are never reused). It refuses to run under `DJANGO_ENV=staging`/`production`
-without `--force`.
+are never reused) and a few **stock-level policies** (so the alerts panel isn't
+empty). It rebuilds the `InventoryBalance` cache at the end and refuses to run
+under `DJANGO_ENV=staging`/`production` without `--force`.
 
 ## Settings & environment
 

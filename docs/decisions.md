@@ -284,3 +284,78 @@ allocation — pick a different constant for any future advisory lock. History i
 available from Phase 3; Phase 4's ledger adds the quantity side without changing
 the event log. `transition_unit` is the status-only path and writes an event but
 no ledger row — see `serialized-units.md` "Mutation path".
+
+---
+
+## ADR-009 — Stock ledger: append-only `InventoryTransaction`, rebuildable `InventoryBalance` cache, `SerializedInventoryService` as the sole lifecycle writer
+
+**Status:** Accepted (Phase 4)
+
+**Context.** Phase 4 needs "stock by status and location" for serialized
+products, low/out/overstock alerts, and a stock-transfer flow — without a stored
+counter that can silently drift. `HEXAGARE_FEATURES.md` §17 says serialized
+quantities "should be calculated from Product Unit statuses"; CLAUDE.md says
+`InventoryBalance` is a read cache never written directly and `InventoryService`
+is the only writer, and that the Phase 3 `transition` endpoint stays for
+status-only changes but must not touch the ledger.
+
+**Decision.**
+1. **`InventoryTransaction` is the append-only ledger.** One row = one signed
+   change to a `(variant, location, status)` bucket
+   (`quantity` ∈ ℤ, `kind`, optional `serialized_unit`, `reference` UUID,
+   `actor`, `note`). `save()` refuses any post-creation edit; `delete()` raises.
+   A move between buckets (transfer, reserve, sell, …) is the **−1 / +1 pair**
+   sharing one `reference`.
+2. **`InventoryBalance` is a disposable cache**, one row per
+   `(variant, location, status)` (`PositiveIntegerField`, `UniqueConstraint`).
+   `InventoryService.record()` updates it under `select_for_update` in the same
+   atomic block as the ledger write and refuses to drive a bucket negative.
+   `InventoryService.rebuild_balances()` reconstructs every row from the live
+   `SerializedUnit` counts (plus non-serialized `ADJUSTMENT` sums); the
+   `rebuild_inventory_balances` management command exposes it.
+3. **`InventoryService` (`apps/inventory/services/ledger.py`) is the only writer**
+   of both models — `record`, `move_unit`, `opening`, `adjust`,
+   `rebuild_balances`.
+4. **`SerializedInventoryService` (`apps/products/services/serialized_inventory.py`)
+   is the only path that changes a serialized unit's status as a business
+   action.** Each verb (`generate`, `reserve`, `release`, `start_transfer`,
+   `complete_transfer`, `cancel_transfer`, `sell`, `return_unit`, `damage`,
+   `lose`, `restore`, `cancel`) locks the unit row, calls Phase 3's
+   `transition_unit` (state machine + `SerializedUnitEvent`), then
+   `InventoryService.move_unit` — one `transaction.atomic`, so status and ledger
+   never diverge. A rejected transition rolls back both.
+5. **`create_unit` now emits an `OPENING` ledger row** in its existing atomic
+   block (runtime import of `InventoryService`, so `apps.products` → `apps.inventory`
+   at call time only). A unit entering stock is a ledger event from Phase 4 on.
+6. **The plain `POST /products/serialized-units/{id}/transition/` endpoint is
+   unchanged and still writes no ledger row** — the intentional gap. It is for
+   status-only corrections; using it for a move with stock meaning leaves the
+   cache stale until `rebuild_inventory_balances` runs. `GET /inventory/overview/`
+   is computed **live** from the units and returns `cache_matches`; a
+   `balance_mismatch` alert surfaces the same drift.
+7. **`StockTransfer` / `StockTransferLine`** model the scan-based transfer and
+   its history (§16). Lifecycle `OPEN` → `COMPLETED` / `CANCELLED`; each scan
+   dispatches one unit (`AVAILABLE → IN_TRANSIT`), `receive` lands every line at
+   `to_location`, `cancel` rolls them back to `from_location`.
+8. **`StockLevelPolicy`** (`variant`, optional `location`, `min_quantity`,
+   `max_quantity`) drives the alerts, computed on demand in
+   `apps/inventory/services/alerts.py` — nothing stored.
+9. **RBAC.** `stock_adjustments` (previously reserved) now gates Location writes,
+   `StockLevelPolicy` writes and the manual `adjustments/` endpoint;
+   `inventory.transfer` gates the transfer flow; `inventory.view` covers all
+   reads. No new codename.
+10. **`Location` becomes a full `ModelViewSet`** (ADR-007 anticipated this);
+    delete is blocked while the location holds units or balances.
+
+**Consequences.** The ledger is the immutable source of truth; the cache is
+always rebuildable, so a bug in cache maintenance is recoverable, not corrupting.
+Serialized status and stock quantity can only move together through
+`SerializedInventoryService`. The `transition` endpoint's gap is real and
+documented (`inventory-ledger.md`, `serialized-units.md`) — the price of keeping
+a simple status-only correction path. Non-serialized "quantity inventory"
+(§17) is only partially covered this phase: the `adjustments/` endpoint + service
+support it, but there is no dedicated quantity-stock UI. Phase 8 wires
+`SerializedInventoryService.sell()` on payment; Phase 10 uses `return_unit()` /
+`damage()`; Phase 5 bulk generation calls `generate()`. Advisory-lock namespace
+`1001` is still the only one in use (the ledger uses row locks, not advisory
+locks).

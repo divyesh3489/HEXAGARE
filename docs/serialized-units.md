@@ -134,16 +134,19 @@ Nine statuses (`HEXAGARE_FEATURES.md` §14):
 `can_transition_to(status)`, `allowed_transitions`, and `is_terminal` are model
 helpers. A no-op (moving to the current status) is rejected.
 
-Some transitions are only *meaningful* through a specific business action — from
-Phase 4 those are **enforced** to go through `SerializedInventoryService` (which
-also writes the stock ledger):
+Some transitions are only *meaningful* through a specific business action. From
+Phase 4 those go through `SerializedInventoryService`, which also writes the
+stock ledger (`inventory-ledger.md`, ADR-009). This is enforced by **convention**
+plus reconciliation, not a hard lock — the plain `transition` endpoint can still
+apply any legal move, it just won't touch the ledger (see "Mutation path").
 
-| Transition | Business action (Phase) |
-|---|---|
-| `AVAILABLE → RESERVED` | Order / invoice reservation (Phase 7) |
-| `RESERVED → SOLD`, `IN_TRANSIT → SOLD` | Sale completion / payment (Phase 8) |
-| `AVAILABLE → IN_TRANSIT`, `IN_TRANSIT → AVAILABLE` | Stock transfer (Phase 4) |
-| `SOLD → RETURNED`, `RETURNED → AVAILABLE/DAMAGED` | Returns processing (Phase 10) |
+| Transition | Business action (Phase) | Service verb |
+|---|---|---|
+| `AVAILABLE → RESERVED` / back | Order / invoice reservation (Phase 7) | `reserve` / `release` |
+| `RESERVED → SOLD`, `IN_TRANSIT → SOLD` | Sale completion / payment (Phase 8) | `sell` |
+| `AVAILABLE → IN_TRANSIT`, `IN_TRANSIT → AVAILABLE` | Stock transfer (Phase 4) | `start_transfer` / `complete_transfer` / `cancel_transfer` |
+| `SOLD → RETURNED`, `RETURNED → AVAILABLE/DAMAGED` | Returns processing (Phase 10) | `return_unit` / `restore` / `damage` |
+| `AVAILABLE → DAMAGED/LOST`, back | Write-off / recovery (Phase 10) | `damage` / `lose` / `restore` |
 
 ---
 
@@ -154,11 +157,22 @@ also writes the stock ledger):
   `ALLOWED_TRANSITIONS`, updates `status` (and optionally `location`), writes a
   `SerializedUnitEvent`. It does **not** touch any stock ledger (there isn't one
   until Phase 4). Exposed as `POST /serialized-units/{id}/transition/`.
-- **Phase 4+** — `SerializedInventoryService` becomes the **only** path allowed
-  to transfer / sell / damage / lose / return a unit: it wraps
-  `transition_unit` **and** `InventoryService` in one atomic block so the ledger
-  stays in step. The plain `transition` endpoint stays available for simple
-  status-only corrections.
+- **Phase 4+** — `SerializedInventoryService`
+  (`apps/products/services/serialized_inventory.py`) is the **only** path that
+  changes a unit's status as part of a business action
+  (generate / reserve / release / start_transfer / complete_transfer /
+  cancel_transfer / sell / return_unit / damage / lose / restore / cancel). Each
+  verb locks the unit row, calls `transition_unit` **and**
+  `InventoryService.move_unit` in one `transaction.atomic`, so the status and the
+  stock ledger never diverge; a rejected transition rolls back both.
+  `create_unit` now also emits an `OPENING` ledger row.
+- **The plain `transition` endpoint is unchanged and still writes no ledger row**
+  — the deliberate gap (ADR-009). It is for status-only corrections; a move with
+  stock meaning made through it leaves `InventoryBalance` stale until
+  `manage.py rebuild_inventory_balances` runs. `GET /inventory/overview/`
+  (computed live from the units) reports `cache_matches: false` and a
+  `balance_mismatch` alert fires meanwhile. Do not "fix" this by wiring the
+  endpoint to the ledger.
 
 Never change `status`, `serial_number`, `sequence` or `location` with a direct
 field write.

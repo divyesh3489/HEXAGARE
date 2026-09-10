@@ -93,9 +93,13 @@ def create_unit(
 ):
     """Allocate a serial and create one :class:`SerializedUnit`.
 
-    Writes the opening :class:`SerializedUnitEvent` in the same atomic block.
-    Bulk generation + label PDFs are Phase 5; this is the single-unit path.
+    Writes the opening :class:`SerializedUnitEvent` and the opening
+    :class:`~apps.inventory.models.InventoryTransaction` (stock ledger) in the
+    same atomic block -- from Phase 4 a unit entering stock is a ledger event
+    (ADR-009).  Bulk generation + label PDFs are Phase 5; this is the
+    single-unit path.
     """
+    from apps.inventory.services.ledger import InventoryService
     from apps.products.models import SerializedUnit, SerializedUnitEvent
 
     status = status or SerializedUnit.Status.GENERATED
@@ -123,6 +127,7 @@ def create_unit(
         note="created",
         actor=actor if getattr(actor, "is_authenticated", False) else None,
     )
+    InventoryService.opening(unit=unit, actor=actor)
     return unit
 
 

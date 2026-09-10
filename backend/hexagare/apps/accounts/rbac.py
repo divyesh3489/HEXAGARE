@@ -33,7 +33,7 @@ OPERATIONAL_PERMISSIONS: dict[str, str] = {
     # -- Inventory -------------------------------------------------------
     "inventory.view": "View inventory balances and the stock ledger",
     "inventory.transfer": "Transfer stock between locations",
-    "stock_adjustments": "Adjust stock levels",  # reserved (Phase 4)
+    "stock_adjustments": "Adjust stock levels, manage locations and stock-level policies",
     # -- Sales / orders / POS ------------------------------------------
     "sales.view": "View orders and sales",
     "orders.manage": "Edit and cancel orders",

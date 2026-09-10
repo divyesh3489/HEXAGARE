@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings so they run inside the Linux containers
+# even when the repo is checked out on Windows (core.autocrlf=true would
+# otherwise give them CRLF and break `sh`).
+*.sh text eol=lf
+backend/hexagare/entrypoint.sh text eol=lf

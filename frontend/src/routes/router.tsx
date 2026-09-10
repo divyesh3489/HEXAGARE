@@ -2,6 +2,14 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
+import {
+  InventoryAlertsPage,
+  InventoryOverviewPage,
+  StockLedgerPage,
+  StockTransferDetailPage,
+  StockTransferNewPage,
+  StockTransfersPage,
+} from "@/features/inventory";
 import { CategoriesPage, ProductDetailPage, ProductsPage } from "@/features/products";
 import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
 import { DashboardPage } from "./dashboard";
@@ -10,10 +18,6 @@ import { StubPage } from "./stub-page";
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
   { path: "products/bulk-generate", title: "Bulk Generate Units", phase: "Phase 5" },
-  { path: "inventory", title: "Inventory Overview", phase: "Phase 4" },
-  { path: "inventory/transfers", title: "Stock Transfers", phase: "Phase 4" },
-  { path: "inventory/ledger", title: "Stock Ledger", phase: "Phase 4" },
-  { path: "inventory/alerts", title: "Inventory Alerts", phase: "Phase 4" },
   { path: "sales/new", title: "New Bill", phase: "Phase 8" },
   { path: "sales/orders", title: "Orders", phase: "Phase 7" },
   { path: "sales/returns", title: "Returns", phase: "Phase 10" },
@@ -46,8 +50,13 @@ export const router = createBrowserRouter([
           { path: "products/categories", element: <CategoriesPage /> },
           { path: "products/units", element: <SerializedUnitsPanel /> },
           { path: "products/units/:unitId", element: <SerializedUnitDetailPage /> },
-          { path: "products/serial-numbers", element: <SerializedUnitsPanel /> },
           { path: "products/:productId", element: <ProductDetailPage /> },
+          { path: "inventory", element: <InventoryOverviewPage /> },
+          { path: "inventory/transfers", element: <StockTransfersPage /> },
+          { path: "inventory/transfers/new", element: <StockTransferNewPage /> },
+          { path: "inventory/transfers/:transferId", element: <StockTransferDetailPage /> },
+          { path: "inventory/ledger", element: <StockLedgerPage /> },
+          { path: "inventory/alerts", element: <InventoryAlertsPage /> },
           ...stubRoutes.map((route) => ({
             path: route.path,
             element: <StubPage title={route.title} phase={route.phase} />,
