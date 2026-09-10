@@ -33,6 +33,39 @@ backend/hexagare/
     customers/ purchases/ suppliers/ expenses/ reports/ notifications/   (later phases)
 ```
 
+## Frontend
+
+React + Vite + TypeScript SPA under `frontend/src` — `routes/` (a
+`createBrowserRouter` tree behind an auth gate + `AppShell`), `features/<domain>/`
+(one folder per domain: `api.ts` fetch wrappers, React Query `hooks.ts`, pages),
+`components/ui/` (shadcn/Tailwind primitives), `api/client.ts` (the `{error}` /
+`{data,meta}` envelope-aware fetch client with JWT refresh).
+
+Installable **PWA** since Phase 6 (`vite-plugin-pwa`, ADR-011): a service worker
+precaches the built app shell for offline launch, but every `/api/` and `/media/`
+request is `NetworkOnly` so authed per-user data is never served stale. The
+`/barcode/scan` route is a mobile camera scanner (`@zxing/browser`, lazy-loaded)
+that resolves a serial through the Phase 3 lookup endpoint.
+
+**Testing the scanner camera on a phone.** Browsers only expose `getUserMedia`
+on a *secure context* — HTTPS, or a `localhost` / `127.0.0.1` origin. Loading the
+dev server over its LAN IP (`http://192.168.x.x:5173`) shows the scanner's
+"Camera unavailable" state; manual serial entry still works, but the camera does
+not. To exercise the camera on a real device, make the origin `localhost` via an
+Android USB reverse-tunnel:
+
+```
+# one-time: install Google "platform-tools" (has adb); enable USB debugging on the phone
+adb devices                       # phone shows as "device"
+adb reverse tcp:5173 tcp:5173     # phone's localhost:5173 -> this PC's :5173
+# then open http://localhost:5173/barcode/scan in Chrome ON THE PHONE
+```
+
+`adb reverse` is cleared on unplug/reboot — re-run the line each session
+(`adb reverse --remove-all` to clear). A trusted-HTTPS tunnel
+(`cloudflared tunnel --url http://localhost:5173`, ngrok) is the alternative when
+USB isn't available. iOS Safari has no `adb` equivalent — use a tunnel there.
+
 ## Cross-cutting conventions
 
 - **Error envelope**: `apps.common.exceptions.api_exception_handler` →
