@@ -18,6 +18,9 @@ export default defineConfig(() => {
       port: Number(process.env.FRONTEND_PORT ?? 5173),
       proxy: {
         "/api": { target: proxyTarget, changeOrigin: true },
+        // Serialized image URLs are root-relative (/media/...); forward them to
+        // the backend, which serves uploaded files in development.
+        "/media": { target: proxyTarget, changeOrigin: true },
       },
     },
   };

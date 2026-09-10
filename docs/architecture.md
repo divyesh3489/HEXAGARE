@@ -21,7 +21,9 @@ backend/hexagare/
   apps/
     common/          cross-cutting: exception envelope, pagination, binary renderer, health
     accounts/        auth + RBAC                         (Phase 1)
-    products/        catalog + serialized units          (Phases 2-3)
+    products/        catalog (Category / Product / ProductVariant / attributes /
+                     images / LabelSize + SKU service)   (Phase 2);
+                     serialized units + barcodes         (Phase 3)
     inventory/       ledger + balances                   (Phase 4)
     sales/           channel-agnostic orders             (Phase 7)
     billing/         payment / invoice                   (Phase 8)
@@ -39,6 +41,17 @@ backend/hexagare/
 - **Binary responses**: `apps.common.renderers.BinaryRenderer`.
 - **API schema**: `drf-spectacular` at `/api/schema/` and `/api/docs/`.
 - **Async work**: commit in Postgres first, enqueue the Celery task after.
+
+## Seed & demo data
+
+Reference data (RBAC role groups, Locations/SalesChannels once built, `LabelSize`
+defaults) is seeded on every `migrate` via `post_migrate` hooks — no manual step.
+`make seed` (`python manage.py seed_demo_data`, in `apps/common`) is the separate,
+idempotent, dev-only command that adds demo **users** (`admin` / `manager` /
+`cashier` / `warehouse` `@hexagare.test`, password `demo-Passw0rd!`, realigned to
+their role group on every run) and a small demo **catalog** (Peripherals tree,
+Size/Colour/Switch attributes, 3 products × 2 variants). It refuses to run under
+`DJANGO_ENV=staging`/`production` without `--force`.
 
 ## Settings & environment
 
