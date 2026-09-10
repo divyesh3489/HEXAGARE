@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate test lint seed backend-shell frontend-shell
+.PHONY: up down logs migrate test lint lint-backend lint-frontend build-frontend seed backend-shell frontend-shell
 
 up:              ## Build and start all services
 	docker compose up --build
@@ -15,8 +15,16 @@ migrate:         ## Apply database migrations
 test:            ## Run the backend test suite
 	docker compose run --rm -e DJANGO_ENV=test backend python manage.py test
 
-lint:            ## Lint the backend (ruff); frontend lint added in Phase 1
+lint: lint-backend lint-frontend  ## Lint backend (ruff) and frontend (eslint)
+
+lint-backend:    ## Lint the backend with ruff
 	docker compose run --rm backend ruff check --no-cache .
+
+lint-frontend:   ## Lint the frontend with eslint
+	docker compose run --rm frontend npm run lint
+
+build-frontend:  ## Type-check and production-build the frontend
+	docker compose run --rm frontend npm run build
 
 seed:            ## Load demo products / users
 	docker compose exec backend python manage.py seed_demo_data
@@ -24,5 +32,5 @@ seed:            ## Load demo products / users
 backend-shell:   ## Open a shell in the backend container
 	docker compose run --rm backend sh
 
-frontend-shell:  ## Open a shell in the frontend container (Phase 1)
+frontend-shell:  ## Open a shell in the frontend container
 	docker compose run --rm frontend sh

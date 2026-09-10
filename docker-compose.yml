@@ -64,6 +64,20 @@ services:
       - backend
       - redis
 
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      # Vite proxies /api to the backend container; no CORS config on Django.
+      VITE_API_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   media_data:

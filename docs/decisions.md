@@ -48,3 +48,41 @@ SKU-uniqueness enforcement at the DB level. No historical price tracking beyond
 what the audit log captures, and no per-customer or per-channel price lists.
 Promoting any of these to a standalone entity requires a new ADR and a
 migration; do not do it ad hoc.
+
+---
+
+## ADR-003 — Role → permission-name-set RBAC on Django Groups/Permissions
+
+**Status:** Accepted (Phase 1)
+
+**Context.** Hexagare needs action-level permissions (POS, returns, stock
+adjustments, receiving, settings, …) across ~13 domain apps, most not built yet.
+Users are assigned a job role, not individual permissions. We want role
+definitions in one reviewable place, per-action gating in viewsets, and no
+custom permission tables to keep in sync with Django's auth system.
+
+**Decision.** `apps/accounts/rbac.py` is the single source of truth:
+`OPERATIONAL_PERMISSIONS` maps every action codename to a label (codenames for
+unbuilt features are reserved now so roles stay stable); `ROLE_PERMISSIONS` maps
+each of the four seed roles (Admin, Manager, Cashier, Warehouse) to a set of
+those codenames. `ensure_role_groups()` materializes each codename as a Django
+`Permission` and each role as a `Group` with the matching permission set, and
+runs from a `post_migrate` hook so it is reapplied on every `migrate`. The
+permissions are anchored to a dedicated unmanaged `OperationalPermission` model's
+content type, so they resolve as `accounts.<codename>` and never collide with
+the model CRUD permissions Django auto-creates (pruning stale operational
+permissions is therefore safe). Enforcement is
+`apps/accounts/permissions.py:HasOperationalPermission` (+ a `require(...)`
+factory); multi-action viewsets gate per action via `get_permissions()`.
+
+**Consequences.** Roles are one dict to review and diff. RBAC state is standard
+`auth.Group` / `auth.Permission` rows — `user.has_perm("accounts.pos")`,
+`request.user.get_all_permissions()`, and the admin all work unchanged.
+`post_migrate` keeps environments converged with zero manual steps. Superusers
+bypass all checks (Django default). Trade-offs: no object-level / row-scoped
+permissions (add later if needed), no per-user grants outside a role (supported
+by Django but not modelled here), and adding a permission means editing
+`rbac.py` and migrating. Assigning users to roles/groups is manual until the
+Phase 17 settings UI. (The Phase 7 prompt's passing reference to "ADR-003" for
+sales-channel extensibility predates this entry; that decision will take the
+next free number when Phase 7 lands.)
