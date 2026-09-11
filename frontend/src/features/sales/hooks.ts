@@ -46,6 +46,10 @@ export function useSaleCartMutations(id?: number) {
       mutationFn: (lineId: number) => salesApi.removeLine(id as number, lineId),
       onSuccess: onSale,
     }),
+    setCustomer: useMutation({
+      mutationFn: (customer: number | null) => salesApi.setCustomer(id as number, customer),
+      onSuccess: onSale,
+    }),
     cancel: useMutation({
       mutationFn: () => salesApi.cancel(id as number),
       onSuccess: onSale,

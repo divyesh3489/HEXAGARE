@@ -101,6 +101,7 @@ export function OrdersPage() {
                   <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                     <th className="px-4 py-3 font-medium">Order #</th>
                     <th className="px-4 py-3 font-medium">Channel</th>
+                    <th className="px-4 py-3 font-medium">Customer</th>
                     <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 text-right font-medium">Items</th>
                     <th className="px-4 py-3 text-right font-medium">Total</th>
@@ -112,7 +113,7 @@ export function OrdersPage() {
                   {isPending &&
                     Array.from({ length: 8 }).map((_, i) => (
                       <tr key={i} className="border-b">
-                        {Array.from({ length: 7 }).map((__, j) => (
+                        {Array.from({ length: 8 }).map((__, j) => (
                           <td key={j} className="px-4 py-3">
                             <Skeleton className="h-4 w-16" />
                           </td>
@@ -123,7 +124,7 @@ export function OrdersPage() {
                   {!isPending && orders.length === 0 && (
                     <tr>
                       <td
-                        colSpan={7}
+                        colSpan={8}
                         className="px-4 py-12 text-center text-sm text-muted-foreground"
                       >
                         No orders{channel || status ? " match these filters" : " yet"}.
@@ -137,6 +138,9 @@ export function OrdersPage() {
                       <tr key={order.id} className="border-b last:border-0">
                         <td className="px-4 py-3 font-mono text-xs">#{order.id}</td>
                         <td className="px-4 py-3">{order.sales_channel_name}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {order.customer_name ?? "—"}
+                        </td>
                         <td className="px-4 py-3">
                           <Badge variant={saleStatusVariant(order.status)}>{order.status}</Badge>
                         </td>

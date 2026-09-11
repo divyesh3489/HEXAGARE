@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCheckout } from "@/features/billing/hooks";
 import { PAYMENT_METHODS, type PaymentEntry, type PaymentMethod } from "@/features/billing/types";
+import { CustomerPicker } from "@/features/customers";
 import { variantsApi } from "@/features/products/api";
 import { useSale, useSaleCartMutations, useSalesChannels } from "./hooks";
 import { saleStatusVariant } from "./status";
@@ -152,7 +153,9 @@ export function NewBillPage() {
   const [payments, setPayments] = useState<PaymentEntry[]>([{ method: "CASH", amount: "" }]);
 
   const { data: sale, isPending: salePending } = useSale(saleId ?? undefined);
-  const { create, addUnit, removeLine, cancel } = useSaleCartMutations(saleId ?? undefined);
+  const { create, addUnit, removeLine, setCustomer, cancel } = useSaleCartMutations(
+    saleId ?? undefined,
+  );
   const checkout = useCheckout();
 
   const isEditableCart = sale?.status === "DRAFT";
@@ -272,6 +275,27 @@ export function NewBillPage() {
 
       {sale && (
         <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Customer</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <CustomerPicker
+                selected={
+                  sale.customer && sale.customer_name
+                    ? { id: sale.customer, name: sale.customer_name }
+                    : null
+                }
+                onSelect={(customer) =>
+                  setCustomer.mutate(customer?.id ?? null, {
+                    onError: (err) =>
+                      toast.error(errMsg(err, "Couldn't update the customer")),
+                  })
+                }
+              />
+            </CardContent>
+          </Card>
+
           {isEditableCart && (
             <Card>
               <CardHeader className="pb-2">

@@ -539,5 +539,58 @@ settings" already reads as one combined capability; only Admin/Manager hold
 it. See `amazon-order-import.md` for the full CSV format and idempotency
 rules.
 
-## Customers / Purchases / Suppliers / Expenses / Reports / Notifications
+## Customers (`apps/customers`, Phase 11, ADR-016)
+
+`Customer` — `name` (required), `phone`, `email`, `address`, `gstin`,
+`notes` (all optional regardless of `type`), `type`
+(`REGISTERED`/`WALK_IN`), `created_at`/`updated_at`. One model for both a
+fully registered customer and a lightweight walk-in — "registering" a
+walk-in later is just filling in more fields on the same row.
+
+`Sale.customer` is a nullable, `PROTECT` FK to `customers.Customer`. `null`
+is the true "no registration required" walk-in (§30) — no `Customer` row at
+all; a `Customer` row with `type=WALK_IN` is the separate case of wanting a
+name/phone on record without full registration. A customer with any sales
+history cannot be deleted (`apps.customers.views.CustomerViewSet.perform_destroy`
+blocks it with a friendly `validation_error`, same guard style as
+`inventory.Location`).
+
+Attaching/changing/clearing the customer on a sale is its own action,
+`POST /sales/{id}/customer/` (`{"customer": <id> | null}`), gated by the
+existing `orders.manage` — not tied to `sale.is_editable`, since linking a
+customer is metadata, not a cart/total change.
+
+### `apps/customers/services.py` — purchase-history aggregation
+
+Computed on read (not cached columns), walking `apps.sales`/
+`apps.billing`/`apps.products` reverse relations at call time — same
+one-directional pattern as `Sale.amount_paid` walking `apps.billing`:
+
+- `total_purchases(customer)` — sum of `grand_total` across the customer's
+  sales, excluding `DRAFT`/`CANCELLED`.
+- `total_refunds(customer)` — sum of `Return.refund_total` across returns
+  on those sales.
+- `outstanding_amount(customer)` — sum of `balance_due` across those sales
+  (only positive balances).
+- `serial_number_history(customer)` — every `SerializedUnit` ever sold to
+  the customer, via `sale_line_unit__sale_line__sale__customer`.
+
+### API (`/api/v1/customers/`)
+
+Standard CRUD (`customers.view` for list/retrieve, `customers.manage` for
+create/update/delete). List/detail search on `name`/`phone`/`email`/`gstin`,
+`?type=` filter. `CustomerDetailSerializer` returns the profile, the three
+aggregate figures, a light order-history list, and the serial-number
+history in one response — matching this project's scale rather than a
+separate paginated endpoint per section.
+
+RBAC: `customers.view`/`customers.manage` (reserved since Phase 1, held by
+Cashier/Manager/Admin, not Warehouse) — no `rbac.py` change.
+
+Frontend: `frontend/src/features/customers/` — `CustomersPage` (list +
+inline create), `CustomerDetailPage` (profile edit, aggregates, order
+history, serial history), `CustomerPicker` (search-or-walk-in-quick-add,
+reused inside New Bill) — replacing the Phase 0 stub route at `/customers`.
+
+## Purchases / Suppliers / Expenses / Reports / Notifications
 _Not yet built (later phases)._ Scaffold apps only.

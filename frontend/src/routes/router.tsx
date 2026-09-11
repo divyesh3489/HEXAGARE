@@ -11,6 +11,7 @@ import {
   LabelBatchDetailPage,
   LabelBatchesPage,
 } from "@/features/bulk-generate";
+import { CustomerDetailPage, CustomersPage } from "@/features/customers";
 import {
   InventoryAlertsPage,
   InventoryOverviewPage,
@@ -65,7 +66,6 @@ const stubRoutes: { path: string; title: string; phase: string }[] = [
   { path: "purchases/suppliers", title: "Suppliers", phase: "Phase 12" },
   { path: "purchases/orders", title: "Purchase Orders", phase: "Phase 12" },
   { path: "purchases/receive", title: "Receive Stock", phase: "Phase 12" },
-  { path: "customers", title: "Customers", phase: "Phase 11" },
   { path: "finance/payments", title: "Payments", phase: "Phase 8" },
   { path: "finance/expenses", title: "Expenses", phase: "Phase 13" },
   { path: "finance/profit", title: "Profit", phase: "Phase 13" },
@@ -106,6 +106,8 @@ export const router = createBrowserRouter([
           { path: "sales/returns", element: <ReturnsPage /> },
           { path: "sales/returns/new", element: <NewReturnPage /> },
           { path: "sales/returns/:returnId", element: <ReturnDetailPage /> },
+          { path: "customers", element: <CustomersPage /> },
+          { path: "customers/:customerId", element: <CustomerDetailPage /> },
           {
             path: "barcode/scan",
             element: (

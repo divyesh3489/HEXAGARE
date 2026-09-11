@@ -88,6 +88,17 @@ class Sale(models.Model):
         on_delete=models.PROTECT,
         related_name="sales",
     )
+    customer = models.ForeignKey(
+        "customers.Customer",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="sales",
+        help_text="Who this sale is for. Null is a true walk-in with no customer "
+        "record at all (HEXAGARE_FEATURES.md section 30) -- distinct from a "
+        "Customer row with type=WALK_IN, which is a lightweight name/phone on "
+        "record without full registration.",
+    )
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
