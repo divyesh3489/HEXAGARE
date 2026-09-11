@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useUnitProfit } from "@/features/finance/hooks";
+import { useHasPermission } from "@/hooks/use-auth";
 import { useSerializedUnit, useUnitBarcode } from "./hooks";
 import { statusBadgeVariant } from "./status";
 import type { SerializedUnitDetail } from "./types";
@@ -112,6 +114,7 @@ export function SerializedUnitDetailPage() {
         </div>
       </div>
 
+      <ProfitCard unit={unit} />
       <HistoryCard unit={unit} />
     </div>
   );
@@ -167,6 +170,43 @@ function BarcodeCard({ unitId, serial }: { unitId: number; serial: string }) {
         <p className="text-xs text-muted-foreground">
           Code128 · rendered on demand, never stored.
         </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+const SOLD_STATUSES = new Set(["SOLD", "RETURNED"]);
+
+function ProfitCard({ unit }: { unit: SerializedUnitDetail }) {
+  const canViewFinance = useHasPermission()("finance.view");
+  const eligible = canViewFinance && SOLD_STATUSES.has(unit.status);
+  const { data: profit, isPending, error } = useUnitProfit(unit.id, eligible);
+
+  if (!eligible) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Profit (this sale)</CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {isPending && <Skeleton className="h-32 w-full" />}
+        {error && (
+          <p className="text-sm text-muted-foreground">Profit could not be computed for this unit.</p>
+        )}
+        {profit && (
+          <>
+            <Row label="Purchase cost">{money(profit.purchase_cost)}</Row>
+            <Row label="Taxable selling value">{money(profit.taxable_selling_value)}</Row>
+            <Row label="Amazon fees">{money(profit.amazon_fees)}</Row>
+            <Row label="Courier">{money(profit.courier)}</Row>
+            <Row label="Advertising">{money(profit.advertising)}</Row>
+            <Row label="Other charges">{money(profit.other_charges)}</Row>
+            <Row label="Unit profit">
+              <span className="font-semibold">{money(profit.unit_profit)}</span>
+            </Row>
+          </>
+        )}
       </CardContent>
     </Card>
   );

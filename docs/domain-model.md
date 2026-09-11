@@ -706,5 +706,40 @@ which is sourced from a single manually-chosen variant and quantity, this
 is sourced from the order's own pending lines) — replacing the Phase 0 stub
 routes at `/purchases/orders` and `/purchases/receive`.
 
-## Expenses / Reports / Notifications
+## Expenses / Finance (`apps/expenses`, Phase 13, ADR-018)
+
+`Expense` — `category` (fixed `TextChoices`: Amazon fees, Shipping, Courier, Packaging,
+Advertising, Manufacturing, Raw materials, Offline expenses, Other expenses — a closed taxonomy
+per HEXAGARE_FEATURES.md §35, not a separate model), `sales_channel` (optional FK, blank = general/
+business-wide), `amount`, `expense_date`, `note`, `created_by`.
+
+`FinanceService` (`apps/expenses/services.py`) is a read-only aggregation, same Python-loop style
+as `apps.customers.services`/`apps.suppliers.services` — no cached columns:
+
+- `summary(date_from, date_to, channel=None)` — walks qualifying `Sale`s (excludes `DRAFT`/
+  `CANCELLED`) in the range, reusing `Sale.subtotal`/`tax_total`/`discount_total`/`grand_total`
+  for taxable/gross sales, GST and discounts; sums each sold unit's `SerializedUnit.purchase_cost`
+  (falling back to `variant.effective_purchase_price` for units that predate Phase 12 receiving)
+  for product cost; folds `AmazonOrderSettlement` fee columns and matching `Expense` categories
+  into `packaging`/`shipping`/`advertising`/`amazon_fees`/`other_expenses` buckets (both an
+  automatic settlement figure and a manually logged expense can be the source of a given cost);
+  reports `Return.refund_total` separately. `gross_profit = taxable_sales − product_cost`;
+  `net_profit = gross_profit − packaging − shipping − amazon_fees − advertising −
+  other_expenses` — GST/discounts/refunds are informational, not subtracted again (§36).
+- `by_channel(date_from, date_to)` — the same summary per active `SalesChannel`.
+- `unit_profit(unit)` — §37 per-serial profit: apportions the sale line's `taxable_value` and (for
+  an Amazon order) its `AmazonOrderSettlement` fee columns evenly across the line's bound units —
+  same even-split reasoning `ReturnService` uses for refund amounts.
+
+API under `/api/v1/expenses/`: `expenses/` CRUD (`expenses.manage` for every action — no separate
+`.view` codename was reserved); `finance/summary/`, `finance/by-channel/` and
+`finance/units/{unit_id}/profit/` (all `finance.view`, both reserved since Phase 1, held by
+Admin/Manager only). Frontend: `frontend/src/features/expenses/` (`ExpensesPage` — list + inline
+create/edit, filterable by category/channel/date) and `frontend/src/features/finance/`
+(`ProfitSummaryPage` — date-range picker, summary tiles, by-channel table); a "Profit (this
+sale)" card was added to `SerializedUnitDetailPage`, shown only for a `SOLD`/`RETURNED` unit and
+gated on `finance.view` — replacing the Phase 0 stub routes at `/finance/expenses` and
+`/finance/profit`.
+
+## Reports / Notifications
 _Not yet built (later phases)._ Scaffold apps only.
