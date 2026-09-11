@@ -15,6 +15,7 @@ api_v1_patterns = [
     path("auth/", include("apps.accounts.urls")),
     path("inventory/", include("apps.inventory.urls")),
     path("products/", include("apps.products.urls")),
+    path("sales/", include("apps.sales.urls")),
     path("", include("apps.common.urls")),
 ]
 

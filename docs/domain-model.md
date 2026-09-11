@@ -259,9 +259,48 @@ RBAC: `inventory.view` (reads), `inventory.transfer` (transfers),
 phase.
 
 ## Sales and billing
-_Not yet built (Phases 7-8)._ `SalesChannel`, generic `Sale` / `SaleLine`
-(derived totals via `SalesTotalsService`), `Payment`, `Invoice`,
-`InvoiceDelivery`.
+
+**`SalesChannel` / `Sale` / `SaleLine` built (Phase 7, ADR-012).**
+`Payment`/`Invoice`/`InvoiceDelivery`, and wiring sale completion (reservation,
+the inventory ledger, serialized-unit `sell()`) are still Phase 8.
+
+- **`SalesChannel`** (`apps/sales`) — `code`/`name`/`is_active`, seeded via a
+  `post_migrate` hook (`apps/sales/bootstrap.py`, rows `AMAZON`/`OFFLINE`), the
+  same shape as `inventory.Location`. A new channel is a new row, never a code
+  change.
+- **`Sale`** — one generic order for every channel (the "Order" of
+  HEXAGARE_FEATURES.md §27). `status` is a single superset `TextChoices`
+  spanning both channels' vocabularies (`DRAFT` through `REFUNDED`) — a
+  channel-specific status is a *value*, not a schema difference.
+  `external_reference` (blank by default, unique with `sales_channel` once
+  set) is pulled forward from Phase 9's Amazon-import idempotency key, same
+  precedent as `Location` landing ahead of the Phase 4 ledger.
+  `subtotal`/`discount_total`/`tax_total`/`grand_total` are a rebuildable
+  cache — written only by `apps/sales/services/totals.py:SalesTotalsService`,
+  which locks the `Sale` row and resums its lines, the same lock-then-write
+  shape as `InventoryService` (ADR-009).
+- **`SaleLine`** — `variant`, `quantity`, and a pricing **snapshot**
+  (`unit_price`/`tax_rate` copied from the variant's `effective_*` at add-time,
+  never re-read live). GST-inclusive, same convention as
+  `ProductVariant.base_price`/`gst_amount`: taxable value and tax are derived
+  backward from `unit_price` via `taxable_value`/`tax_amount` properties.
+  **No `serialized_unit` FK yet** — Phase 8 owns that schema decision once the
+  `AVAILABLE → RESERVED → SOLD` flow is actually built. No `customer` FK
+  either (`apps.customers` doesn't exist until Phase 11).
+
+### API (`/api/v1/sales/`)
+
+- `channels/` (GET, `sales.view`) — read-only list of sales channels.
+- `` (list/retrieve, `sales.view`; create, `orders.manage`) — `?channel=<code>`
+  `?status=<STATUS>` filters. Create accepts an optional nested `lines` list.
+- `{id}/lines/` (POST, `orders.manage`) — add a line to a `DRAFT` sale;
+  snapshots pricing, then calls `SalesTotalsService.recalculate`.
+- `{id}/lines/{line_id}/` (PATCH/DELETE, `orders.manage`) — edit
+  quantity/discount or remove a line; same recalculation.
+- `{id}/cancel/` (POST, `orders.manage`) — sets `status=CANCELLED`.
+
+RBAC: `sales.view` (reads), `orders.manage` (create/edit/cancel). Both
+codenames were already reserved in `rbac.py` — no change this phase.
 
 ## Integrations (Amazon)
 _Not yet built (Phase 9)._ `AmazonOrderSettlement` holds channel-specific

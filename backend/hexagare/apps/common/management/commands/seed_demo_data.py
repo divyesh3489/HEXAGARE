@@ -30,6 +30,8 @@ from apps.products.models import (
     ProductVariant,
 )
 from apps.products.services.serial_numbers import create_unit
+from apps.sales.models import Sale, SaleLine, SalesChannel
+from apps.sales.services.totals import SalesTotalsService
 
 User = get_user_model()
 
@@ -171,6 +173,25 @@ DEMO_STOCK_POLICIES = [
     ("HEX-DM-BLACK-001", "amazon", 1, 10),
 ]
 
+# A couple of demo orders so the Orders list isn't empty in dev. Matched on
+# (channel, external_reference, note) -- unique enough for this fixed set.
+DEMO_SALES = [
+    {
+        "channel": "OFFLINE",
+        "external_reference": "",
+        "note": "Demo walk-in counter sale",
+        "status": Sale.Status.COMPLETED,
+        "lines": [("HEX-MP-11X23-001", 1)],
+    },
+    {
+        "channel": "AMAZON",
+        "external_reference": "DEMO-AMZ-0001",
+        "note": "",
+        "status": Sale.Status.SHIPPED,
+        "lines": [("HEX-DM-BLACK-001", 2)],
+    },
+]
+
 
 class Command(BaseCommand):
     help = "Seed the database with demo users and a demo catalog (idempotent)."
@@ -205,6 +226,7 @@ class Command(BaseCommand):
         # The opening ledger rows are written as each unit is created; this only
         # matters if units pre-date the Phase 4 migration on an existing DB.
         InventoryService.rebuild_balances()
+        sales = self._seed_sales()
 
         self.stdout.write(self.style.SUCCESS("Demo data ready:"))
         rows = [
@@ -215,6 +237,7 @@ class Command(BaseCommand):
             ("variants", variants),
             ("units", units),
             ("stock policies", policies),
+            ("sales", sales),
         ]
         for label, counts in rows:
             self.stdout.write(
@@ -350,4 +373,37 @@ class Command(BaseCommand):
                 defaults={"min_quantity": minimum, "max_quantity": maximum},
             )
             result["created" if created else "existing"] += 1
+        return result
+
+    # -- sales / orders ------------------------------------------------
+    def _seed_sales(self) -> dict:
+        """A couple of demo orders across both channels, one per DEMO_SALES
+        entry. Pricing is snapshotted from the variant, same as the API."""
+        result = {"created": 0, "existing": 0}
+        for spec in DEMO_SALES:
+            channel = SalesChannel.objects.filter(code=spec["channel"]).first()
+            if channel is None:
+                continue
+            sale, created = Sale.objects.get_or_create(
+                sales_channel=channel,
+                external_reference=spec["external_reference"],
+                note=spec["note"],
+                defaults={"status": spec["status"]},
+            )
+            if not created:
+                result["existing"] += 1
+                continue
+            for sku, quantity in spec["lines"]:
+                variant = ProductVariant.objects.filter(sku=sku).first()
+                if variant is None:
+                    continue
+                SaleLine.objects.create(
+                    sale=sale,
+                    variant=variant,
+                    quantity=quantity,
+                    unit_price=variant.effective_selling_price,
+                    tax_rate=variant.effective_tax_rate,
+                )
+            SalesTotalsService.recalculate(sale)
+            result["created"] += 1
         return result
