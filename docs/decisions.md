@@ -483,3 +483,68 @@ context: fine on `localhost` and HTTPS, but a phone hitting a bare LAN IP over
 tunnel / `--https`) — documented, not worked around. First frontend chunk-split
 in the app; if more routes need it, factor a shared lazy helper. Adding QR-code
 labels later needs no scanner change (the format is already in the hint set).
+
+---
+
+## ADR-012 — Sales Core: data-driven `SalesChannel`, one `Sale`/`SaleLine` shape, unified status enum
+
+**Status:** Accepted (Phase 7)
+
+**Context.** Phase 7 (`HEXAGARE_FEATURES.md` §19, §26–27) stands up `apps.sales`
+as a real domain app for the first time: a data-driven sales channel and one
+generic order model covering every channel, per CLAUDE.md's "no per-channel
+schemas" mandate. This resolves the note under ADR-003 above — the Phase 7
+prompt's passing reference to "ADR-003" for sales-channel extensibility was a
+placeholder; this is that decision, at the next free number.
+
+Section 27 lists two *different* status vocabularies per channel (Offline:
+Draft/Reserved/Completed/Cancelled/Returned; Amazon: Pending/Confirmed/Shipped/
+In Transit/Delivered/Cancelled/Returned/Refunded), which reads at first glance
+like a per-channel schema need.
+
+**Decision.**
+1. **`SalesChannel`** mirrors `inventory.Location`'s shape exactly: `code`/
+   `name`/`is_active`, seeded via a `post_migrate` hook
+   (`apps/sales/bootstrap.py`, rows `AMAZON`/`OFFLINE`). A new channel (Shopify,
+   Flipkart, …) is a new row — never a code branch.
+2. **One `Sale.status` field, a superset `TextChoices`** covering both channel's
+   vocabularies (`DRAFT, PENDING, CONFIRMED, RESERVED, SHIPPED, IN_TRANSIT,
+   DELIVERED, COMPLETED, CANCELLED, RETURNED, REFUNDED`). "No per-channel
+   schema" is read as: don't branch the *shape* by channel — a channel-specific
+   vocabulary is just a subset of *values* the same field can hold, the same
+   way `Location.kind` classifies without a separate table per kind.
+3. **`Sale.external_reference`** (blank-by-default `CharField`, unique with
+   `sales_channel` via a partial constraint once set) is added now, pulled
+   forward from Phase 9's stated idempotency key
+   (`(sales_channel, external_reference)`) — the same precedent as
+   `inventory.Location` landing in Phase 3 ahead of the Phase 4 ledger
+   (ADR-007). A blank string (not `NULL`) represents "no external order", so
+   the field stays an ordinary `CharField` (ruff's `DJ001`); the constraint's
+   condition excludes the blank value instead of an `isnull` check.
+4. **Reservation and the inventory/serialized-unit link are explicitly out of
+   scope.** `SaleLine` has no `serialized_unit` FK — Phase 8's own prompt
+   reserves that schema decision for when the `AVAILABLE → RESERVED → SOLD`
+   flow is actually built; guessing the shape now (single FK vs. a per-unit
+   join row for a multi-quantity line) would likely be wrong. Likewise no
+   `customer` FK (`apps.customers` doesn't exist until Phase 11) and no
+   `location` FK on `Sale`/`SaleLine`.
+5. **Line pricing is a snapshot, not a live read.** `SaleLine.unit_price`/
+   `tax_rate` are copied from `variant.effective_selling_price`/
+   `effective_tax_rate` when the line is added, following the same
+   GST-inclusive convention as `ProductVariant.base_price`/`gst_amount`
+   (taxable value derived backward from an inclusive price). A placed order
+   must not drift when the catalog price changes later.
+6. **`SalesTotalsService.recalculate(sale)`** is the only writer of `Sale`'s
+   four derived total columns, taking a `select_for_update` row lock and
+   summing every line's derived properties — the same lock-then-write shape as
+   `InventoryService` (ADR-009). No Django signals (none exist anywhere in this
+   codebase); every line-mutating view action calls it explicitly.
+
+**Consequences.** Adding Shopify/Flipkart later touches no code — one bootstrap
+row. Amazon CSV import (Phase 9) can set `external_reference` without a
+migration on `Sale`. The line-mutation API (`POST .../lines/`, `PATCH`/`DELETE
+.../lines/{id}/`, mirroring `StockTransfer`'s action style) exists ahead of any
+consuming UI — Phase 8's POS cart is expected to call it directly, per its own
+prompt text. A `Sale` can currently reference more `quantity` than exists in
+stock; that's intentional, not an oversight — inventory/reservation wiring is
+entirely Phase 8.

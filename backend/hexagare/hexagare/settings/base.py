@@ -210,6 +210,7 @@ SPECTACULAR_SETTINGS = {
         "InventoryTransactionKindEnum": "apps.inventory.models.InventoryTransaction.Kind",
         "LabelBatchStatusEnum": "apps.products.models.LabelBatch.Status",
         "LabelBatchBarcodeTypeEnum": "apps.products.models.LabelBatch.BarcodeType",
+        "SaleStatusEnum": "apps.sales.models.Sale.Status",
     },
 }
 
