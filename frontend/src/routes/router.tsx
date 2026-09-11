@@ -31,6 +31,28 @@ const ScannerPage = lazy(() =>
   import("@/features/scanner").then((m) => ({ default: m.ScannerPage })),
 );
 
+// Most users never touch the Amazon integration -- keep it out of the main
+// bundle, same ADR-011 code-split reasoning as the scanner.
+const AmazonImportPage = lazy(() =>
+  import("@/features/integrations").then((m) => ({ default: m.AmazonImportPage })),
+);
+const AmazonImportHistoryPage = lazy(() =>
+  import("@/features/integrations").then((m) => ({ default: m.AmazonImportHistoryPage })),
+);
+const AmazonFeeSettingsPage = lazy(() =>
+  import("@/features/integrations").then((m) => ({ default: m.AmazonFeeSettingsPage })),
+);
+const AmazonSkuMappingPage = lazy(() =>
+  import("@/features/integrations").then((m) => ({ default: m.AmazonSkuMappingPage })),
+);
+
+const integrationsFallback = (
+  <div className="mx-auto max-w-2xl">
+    <PageHeader title="Amazon integration" />
+    <Skeleton className="h-64 w-full" />
+  </div>
+);
+
 const scannerFallback = (
   <div className="mx-auto max-w-md">
     <PageHeader title="Scan" />
@@ -86,6 +108,38 @@ export const router = createBrowserRouter([
             element: (
               <Suspense fallback={scannerFallback}>
                 <ScannerPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "integrations/amazon/import",
+            element: (
+              <Suspense fallback={integrationsFallback}>
+                <AmazonImportPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "integrations/amazon/imports",
+            element: (
+              <Suspense fallback={integrationsFallback}>
+                <AmazonImportHistoryPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "integrations/amazon/fees",
+            element: (
+              <Suspense fallback={integrationsFallback}>
+                <AmazonFeeSettingsPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "integrations/amazon/sku-mapping",
+            element: (
+              <Suspense fallback={integrationsFallback}>
+                <AmazonSkuMappingPage />
               </Suspense>
             ),
           },

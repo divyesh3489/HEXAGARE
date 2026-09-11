@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from apps.accounts.rbac import ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_WAREHOUSE
+from apps.integrations.amazon.models import AmazonFeeConfig, AmazonSkuMapping
 from apps.inventory.models import Location, StockLevelPolicy
 from apps.inventory.services.ledger import InventoryService
 from apps.products.models import (
@@ -227,6 +228,7 @@ class Command(BaseCommand):
         # matters if units pre-date the Phase 4 migration on an existing DB.
         InventoryService.rebuild_balances()
         sales = self._seed_sales()
+        amazon = self._seed_amazon_integration()
 
         self.stdout.write(self.style.SUCCESS("Demo data ready:"))
         rows = [
@@ -238,6 +240,7 @@ class Command(BaseCommand):
             ("units", units),
             ("stock policies", policies),
             ("sales", sales),
+            ("amazon integration", amazon),
         ]
         for label, counts in rows:
             self.stdout.write(
@@ -406,4 +409,33 @@ class Command(BaseCommand):
                 )
             SalesTotalsService.recalculate(sale)
             result["created"] += 1
+        return result
+
+    # -- Amazon integration (Phase 9) ------------------------------------
+    def _seed_amazon_integration(self) -> dict:
+        """A demo SKU mapping and a global referral-fee rule so the Import
+        page has something to show without an operator configuring it first."""
+        result = {"created": 0, "existing": 0}
+
+        variant = ProductVariant.objects.filter(sku="HEX-DM-BLACK-001").first()
+        if variant is not None:
+            _, created = AmazonSkuMapping.objects.get_or_create(
+                amazon_sku="AMZ-DM-BLACK", defaults={"variant": variant}
+            )
+            result["created" if created else "existing"] += 1
+
+        channel = SalesChannel.objects.filter(code="AMAZON").first()
+        if channel is not None:
+            _, created = AmazonFeeConfig.objects.get_or_create(
+                fee_name=AmazonFeeConfig.FeeName.REFERRAL,
+                sales_channel=channel,
+                applicable_category=None,
+                applicable_product=None,
+                defaults={
+                    "fee_type": AmazonFeeConfig.FeeType.PERCENTAGE,
+                    "value": Decimal("15.00"),
+                    "effective_from": "2020-01-01",
+                },
+            )
+            result["created" if created else "existing"] += 1
         return result

@@ -4,6 +4,7 @@ import {
   Boxes,
   LayoutDashboard,
   Package,
+  Plug,
   ScanLine,
   Settings,
   ShoppingCart,
@@ -68,6 +69,24 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Barcode",
     icon: ScanLine,
     items: [{ label: "Scan", to: "/barcode/scan", permission: "barcode.scan" }],
+  },
+  {
+    label: "Integrations",
+    icon: Plug,
+    items: [
+      { label: "Amazon Import", to: "/integrations/amazon/import", permission: "integrations.amazon" },
+      {
+        label: "Import History",
+        to: "/integrations/amazon/imports",
+        permission: "integrations.amazon",
+      },
+      { label: "Fee Settings", to: "/integrations/amazon/fees", permission: "integrations.amazon" },
+      {
+        label: "SKU Mapping",
+        to: "/integrations/amazon/sku-mapping",
+        permission: "integrations.amazon",
+      },
+    ],
   },
   {
     label: "Purchases",

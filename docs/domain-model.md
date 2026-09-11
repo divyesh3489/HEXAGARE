@@ -429,8 +429,46 @@ RBAC: `billing.view` (reads), `billing.manage` (checkout). Both codenames were
 already reserved in `rbac.py` — no change this phase.
 
 ## Integrations (Amazon)
-_Not yet built (Phase 9)._ `AmazonOrderSettlement` holds channel-specific
-financials, keyed `(sale, sku)`. See `amazon-order-import.md`.
+
+CSV order import (Phase 9, ADR-014) — lives under `apps.integrations` (a
+single Django app; the Amazon-specific code is an `amazon` subpackage, e.g.
+`apps.integrations.amazon.models`, so a future channel gets its own sibling
+subpackage rather than a new app).
+
+- `AmazonSkuMapping` — `amazon_sku` (unique) → `ProductVariant`. Resolves
+  every imported row; auto-created on an exact SKU string match, otherwise
+  managed via the SKU Mapping page.
+- `AmazonFeeConfig` — the configurable fee structure (§22): fee name,
+  `PERCENTAGE`/`FIXED`, value, `sales_channel`, optional
+  `applicable_category`/`applicable_product` scoping (product wins), an
+  effective date range. Consulted only when a CSV row leaves that fee column
+  blank — an actual imported figure always wins.
+- `AmazonOrderSettlement` — one row per `(sale, sku)`: the Amazon-specific
+  per-line financials (`selling_price`, `gst_amount`, `taxable_value`, the
+  fee columns, `refund_amount`) kept off the generic `Sale`/`SaleLine`, plus
+  computed `settlement_amount`/`net_revenue`/`product_cost`/`net_profit`
+  (§21). Idempotent re-import upserts by this key.
+- `AmazonImportBatch` — one CSV upload/run: `PENDING` → `PROCESSING` →
+  `READY`/`PARTIAL`/`FAILED`, counts (`orders_created`/`updated`/`skipped`/
+  `failed`), and `error_log` (one entry per failed row/order) — a CSV import
+  is naturally partial-success, unlike `LabelBatch`'s all-or-nothing shape.
+
+`AmazonOrderImportService.run` (`apps/integrations/amazon/services/importer.py`)
+groups CSV rows by `order_id` and imports each order in its own
+`transaction.atomic()` — one bad order never blocks the rest of the file.
+For an order whose status means stock left the business, it sells serialized
+units directly via `SerializedInventoryService` (`AVAILABLE → RESERVED →
+SOLD`, FIFO at the `amazon` `Location`) and binds them with `SaleLineUnit` —
+**deliberately bypassing** `SaleUnitService`/`CompleteSaleService`: an
+imported order already happened (not a cart), and Amazon issues its own
+invoice, so no `Payment`/`Invoice` is created here. Runs via a Celery task
+(`apps/integrations/amazon/tasks.py`), enqueued on commit, never inline.
+
+RBAC: the single `integrations.amazon` codename (reserved since Phase 1)
+gates every endpoint here — "Import Amazon orders and manage Amazon
+settings" already reads as one combined capability; only Admin/Manager hold
+it. See `amazon-order-import.md` for the full CSV format and idempotency
+rules.
 
 ## Customers / Purchases / Suppliers / Expenses / Reports / Notifications
 _Not yet built (later phases)._ Scaffold apps only.
