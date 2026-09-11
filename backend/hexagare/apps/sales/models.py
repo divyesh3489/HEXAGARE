@@ -15,8 +15,9 @@
   added (prices can change later; a placed order must not).
 
 Reservation of specific :class:`apps.products.SerializedUnit` rows against a
-line, and wiring completion to the inventory ledger, are Phase 8 (billing)
-concerns -- deliberately not modelled here (see ADR-012).
+line is :class:`SaleLineUnit` (Phase 8, ADR-013) -- one row per physical unit
+bound to a line. Completion (selling the units, recording payment, generating
+the invoice) lives in ``apps.billing`` (Phase 8), not here.
 """
 
 from __future__ import annotations
@@ -128,6 +129,22 @@ class Sale(models.Model):
     def is_editable(self) -> bool:
         return self.status in self.EDITABLE_STATUSES
 
+    @property
+    def amount_paid(self) -> Decimal:
+        """Sum of every :class:`~apps.billing.models.Payment` recorded against
+        this sale (a refund-type row subtracts). Walked via the reverse FK
+        accessor only -- ``apps.sales`` never imports ``apps.billing``
+        (cross-app references stay one-directional, same reasoning as the
+        string-FK convention)."""
+        total = _ZERO
+        for payment in self.payments.all():
+            total += payment.amount if payment.type == "PAYMENT" else -payment.amount
+        return total
+
+    @property
+    def balance_due(self) -> Decimal:
+        return self.grand_total - self.amount_paid
+
 
 class SaleLine(models.Model):
     """One line of a :class:`Sale`.
@@ -185,3 +202,39 @@ class SaleLine(models.Model):
     @property
     def tax_amount(self) -> Decimal:
         return _quantize(self.net_amount - self.taxable_value)
+
+    @property
+    def cgst_amount(self) -> Decimal:
+        """Even split of ``tax_amount`` (intra-state only -- see ADR-013)."""
+        return _quantize(self.tax_amount / 2)
+
+    @property
+    def sgst_amount(self) -> Decimal:
+        return _quantize(self.tax_amount - self.cgst_amount)
+
+
+class SaleLineUnit(models.Model):
+    """One physical :class:`~apps.products.models.SerializedUnit` bound to a
+    :class:`SaleLine` (ADR-013 -- the schema decision ADR-012 deferred).
+
+    The ``OneToOneField`` guarantees a unit is bound to at most one line
+    anywhere at a time; deleting the row (on cart-removal / cancel, via
+    :class:`apps.sales.services.units.SaleUnitService`) frees the unit for
+    rebinding. Rows created once a sale completes are a **permanent record**
+    (never deleted) -- ``apps.billing`` and, later, Phase 10 returns need to
+    resolve "which sale/line did this serial sell on".
+    """
+
+    sale_line = models.ForeignKey(SaleLine, on_delete=models.CASCADE, related_name="units")
+    serialized_unit = models.OneToOneField(
+        "products.SerializedUnit",
+        on_delete=models.PROTECT,
+        related_name="sale_line_unit",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"{self.serialized_unit_id} on line #{self.sale_line_id}"

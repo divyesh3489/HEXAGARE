@@ -24,6 +24,17 @@ export const salesApi = {
   channels: () => api.get<Paginated<SalesChannel>>(`${BASE}/channels/${qs({ page_size: 100 })}`),
   list: (query: SalesQuery = {}) => api.get<Paginated<SaleListItem>>(`${BASE}/${qs(query)}`),
   get: (id: number) => api.get<Sale>(`${BASE}/${id}/`),
+  /** Start a new DRAFT sale on a channel -- the first step of the POS flow. */
+  create: (salesChannel: number) =>
+    api.post<Sale>(`${BASE}/`, { sales_channel: salesChannel }),
+  /** Scan/search-add one exact unit to the cart (Phase 8) -- exactly one of
+   * `code` or `variant`. */
+  addUnit: (saleId: number, body: { code: string } | { variant: number }) =>
+    api.post<Sale>(`${BASE}/${saleId}/units/`, body),
+  /** Remove a whole cart line -- releases every unit bound to it. */
+  removeLine: (saleId: number, lineId: number) =>
+    api.delete<Sale>(`${BASE}/${saleId}/lines/${lineId}/`),
+  cancel: (saleId: number) => api.post<Sale>(`${BASE}/${saleId}/cancel/`),
 };
 
 export const salesKeys = {

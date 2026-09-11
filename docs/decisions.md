@@ -548,3 +548,146 @@ consuming UI — Phase 8's POS cart is expected to call it directly, per its own
 prompt text. A `Sale` can currently reference more `quantity` than exists in
 stock; that's intentional, not an oversight — inventory/reservation wiring is
 entirely Phase 8.
+
+---
+
+## ADR-013 — Billing: `SaleLineUnit` join table, advisory-locked invoice numbering, CGST/SGST-only tax
+
+**Status:** Accepted (Phase 8)
+
+**Context.** ADR-012 deliberately deferred the schema for binding a
+`SaleLine` to real `SerializedUnit` rows ("a single FK vs. a per-unit join row
+for a multi-quantity line") until the `AVAILABLE → RESERVED → SOLD` flow was
+actually built. Phase 8 (`HEXAGARE_FEATURES.md` §23–28, rules 5–8) builds that
+flow plus `apps.billing` (`Payment`/`Invoice`/`InvoiceDelivery`) net-new.
+
+**Decision.**
+
+1. **`SaleLineUnit`** (`apps.sales`) is a join table, not a single FK on
+   `SaleLine` — every physical item is a distinct serialized unit, and a line
+   with `quantity > 1` needs to bind more than one. `serialized_unit` is a
+   `OneToOneField` (`PROTECT`) so a unit is bound to at most one line anywhere
+   at a time; `sale_line` is `CASCADE`. `SaleLine.quantity` stays a stored
+   column (unchanged from ADR-012) but is now kept in sync with
+   `units.count()` by `apps.sales.services.units.SaleUnitService` — the only
+   path that adds/removes a bound unit — rather than becoming a derived
+   property, so the existing `gross_amount`/`net_amount`/... properties on
+   `SaleLine` needed no change. A manual `quantity` edit
+   (`PATCH .../lines/{id}/`) is rejected once a line has bound units.
+2. **Two ways into the cart, one service.** `SaleUnitService.add` accepts
+   either `code` (a scanned/typed serial or barcode — HEXAGARE_FEATURES.md
+   §24's exact-unit flow) or `variant` (a product-search add, no serial
+   picked by the cashier) and auto-selects the oldest `AVAILABLE` unit
+   (FIFO by `sequence`) in the latter case. Both paths reserve through the
+   existing `SerializedInventoryService.reserve()` (Phase 4/7), so the stock
+   ledger stays in step automatically — no new ledger-writing code was
+   needed, just wiring. A race on "the oldest available unit" is resolved
+   safely by `reserve()`'s own row lock (the loser gets a clean
+   `validation_error`, never a double-reservation) rather than a second
+   pre-lock.
+3. **Sale completion requires every line to be fully unit-backed**
+   (`quantity == units.count()`). The pre-existing generic
+   `POST /sales/{id}/lines/` endpoint (ADR-012, quantity + variant, no units)
+   is left completely unchanged — it still builds a draft/quote line — but
+   `CompleteSaleService.complete()` refuses to sell a sale containing one,
+   naming the offending line(s). This is the enforcement point, not
+   line-mutation time, so ADR-012's existing line-mutation API needed no
+   behavior change.
+4. **`SaleLineUnit` rows are a permanent record once a sale completes** —
+   never deleted. Phase 10 (Returns) needs to resolve "which sale/line did
+   this serial sell on"; deleting the join row after sale would destroy that.
+   Rows for a still-`DRAFT` line *are* deleted on unit-remove, line-delete, or
+   sale-cancel (`SaleUnitService.remove`/`release_all`), each of which also
+   releases the unit back to `AVAILABLE` first — a discarded cart keeps no
+   unit history, but a completed sale's is permanent.
+5. **Invoice numbering mirrors serial allocation (ADR-008)**: a global
+   counter (`Invoice.sequence`, a plain integer column so allocation reads a
+   `Max()` aggregate rather than re-parsing the formatted `invoice_number`
+   string) behind a Postgres advisory lock, a distinct namespace key (`1002`,
+   vs. the serial allocator's `1001`). Format
+   `<HEXAGARE_INVOICE_PREFIX>-<padded sequence>` (new
+   `HEXAGARE_INVOICE_PREFIX`/`HEXAGARE_INVOICE_PADDING` settings, same
+   env-backed pattern as the SKU/serial prefixes).
+6. **`Invoice` mirrors `LabelBatch`'s async-PDF shape exactly** (ADR-010):
+   `status` `PENDING → READY`/`FAILED`, `pdf_file`, `pdf_generated_at`,
+   `error_message`; `apps.billing.tasks.render_invoice_pdf` is enqueued via
+   `transaction.on_commit` right after `CompleteSaleService` commits — the
+   units are already sold and payment already recorded by the time it runs,
+   so a render failure is fully recoverable (marks `FAILED`, never unwinds
+   the sale) and never blocks checkout on PDF generation.
+7. **CGST/SGST split only, no IGST.** `SaleLine.cgst_amount`/`sgst_amount`
+   (an even split of `tax_amount`, same convention as
+   `ProductVariant.cgst_amount`/`sgst_amount`) are the only GST breakdown the
+   invoice PDF prints. Inter-state detection needs a customer/business "place
+   of supply", which doesn't exist until `apps.customers` (Phase 11) — a
+   documented simplification, not an oversight. Revisit when customer/
+   business state data lands.
+8. **`Payment.type` (`PAYMENT`/`REFUND`) is modeled now**, even though only
+   `PAYMENT` is used this phase — Phase 10's own prompt says returns "refund
+   via Payment," so this avoids a second payment-like model later.
+   `amount` is always positive; a refund is a `REFUND`-typed row, not a
+   negative amount.
+
+**Consequences.** Phase 10 (Returns) can resolve a sold serial back to its
+`Sale`/`SaleLine` via `SaleLineUnit` without a schema change, and record its
+refund as a `Payment` row without a new model. Phase 9 (Amazon import) is
+unaffected — imported historical orders don't need to go through
+`SaleUnitService`/`CompleteSaleService` at all if they arrive already
+"sold" (that decision is Phase 9's own, not made here). Adding IGST later
+needs a `place_of_supply` concept plus a branch in `SaleLine`'s tax
+properties and the invoice PDF — not a `SaleLineUnit`/`Invoice` schema
+change.
+
+---
+
+## ADR-013 addendum — Payment must cover the total to complete a sale; hold/resume; post-completion settlement
+
+**Status:** Accepted (Phase 8, post-launch correction)
+
+**Context.** ADR-013's original point 1 read: "completion does **not**
+require `sum(amount) == Sale.grand_total` — partial/credit sales are
+allowed." In practice this meant `CompleteSaleService.complete()` sold every
+bound unit and generated an invoice as soon as *any* payment was recorded,
+regardless of amount — a ₹500 cash payment on a ₹5,499 sale marked the unit
+`SOLD` and produced a `READY` invoice showing a `balance_due`. Manual testing
+against the live app surfaced this immediately as wrong: an underpaid sale
+must not be treated as sold inventory.
+
+**Decision.**
+1. **`CompleteSaleService.complete()` only sells units and creates the
+   invoice once `sale.amount_paid >= sale.grand_total`** (after recording
+   whatever `payments` were just submitted). Short of that, `Sale.status`
+   becomes `RESERVED` — the existing "on hold" value from ADR-012's Offline
+   status vocabulary — and nothing else changes: units stay `RESERVED`, no
+   `Invoice` row is created. `Sale.amount_paid`/`Sale.balance_due` (new
+   properties, walking the reverse `payments` accessor) let every screen
+   show the running total without an `Invoice` existing yet.
+2. **`complete()` now accepts a `RESERVED` sale, not just `DRAFT`** — calling
+   it again with more `payments` is how a held sale is resumed. A `CREDIT`
+   payment still counts toward `amount_paid` like any other method (an
+   explicit business decision to extend credit completes the sale and sells
+   the goods; an *unrecorded* shortfall does not).
+3. **`CompleteSaleService.record_payment()`** is a second, narrower entry
+   point for a sale that's already `COMPLETED` — settling more of a
+   receivable (e.g. a `CREDIT` balance being paid back) without re-selling
+   units or touching the existing invoice. `CheckoutView` dispatches between
+   `complete`/`record_payment` based on the sale's current status, so the
+   frontend always calls the same `POST /billing/checkout/` regardless of
+   which case applies.
+4. **Frontend: New Bill supports "resume."** `/sales/new?sale=<id>` loads an
+   existing `DRAFT` (full cart edit, exactly as before) or `RESERVED` sale
+   (cart locked — items can't be added/removed, only more payment recorded).
+   The Orders list links to this for any `DRAFT`/`RESERVED` row ("Resume" /
+   "Collect payment"). The Invoice detail page gained a small settle-balance
+   form (visible only when `balance_due > 0`) that posts to the same
+   checkout endpoint, landing on `record_payment`.
+5. **Frontend: a real camera scanner in New Bill**, not just a text input —
+   `frontend/src/features/sales/camera-scan-panel.tsx`, lazy-loaded behind a
+   toggle button (same ADR-011 code-split reasoning as the standalone
+   `/barcode/scan` route: ZXing stays out of New Bill's main chunk).
+
+**Consequences.** `docs/domain-model.md`'s Billing section describes the
+corrected flow directly (not as a diff) since this was caught and fixed
+within the same phase, before merge. The original ADR-013 point 1 is
+superseded by this addendum. No schema change beyond the two new `Sale`
+properties — `Payment`/`Invoice`/`SaleLineUnit` are unchanged.

@@ -60,6 +60,8 @@ class SaleListSerializer(serializers.ModelSerializer):
     sales_channel_code = serializers.CharField(source="sales_channel.code", read_only=True)
     sales_channel_name = serializers.CharField(source="sales_channel.name", read_only=True)
     line_count = serializers.IntegerField(source="lines.count", read_only=True)
+    amount_paid = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    balance_due = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     class Meta:
         model = Sale
@@ -75,6 +77,8 @@ class SaleListSerializer(serializers.ModelSerializer):
             "discount_total",
             "tax_total",
             "grand_total",
+            "amount_paid",
+            "balance_due",
             "created_at",
             "updated_at",
         ]
@@ -128,7 +132,10 @@ class SaleLineWriteSerializer(serializers.Serializer):
 class SaleLineUpdateSerializer(serializers.Serializer):
     """Input for ``PATCH /sales/{id}/lines/{line_id}/``. Only quantity and the
     manual per-line discount are editable after a line is added -- pricing
-    stays a fixed snapshot."""
+    stays a fixed snapshot. A ``quantity`` edit is rejected once the line has
+    bound units (Phase 8, ADR-013) -- quantity must then only change via the
+    ``units/`` scan-add/remove actions, which keep it in sync with the
+    reserved unit count."""
 
     quantity = serializers.IntegerField(min_value=1, required=False)
     discount_amount = serializers.DecimalField(
@@ -136,9 +143,17 @@ class SaleLineUpdateSerializer(serializers.Serializer):
     )
 
     def apply(self, line: SaleLine) -> SaleLine:
-        for field, value in self.validated_data.items():
+        data = self.validated_data
+        if "quantity" in data and line.units.exists() and data["quantity"] != line.units.count():
+            raise serializers.ValidationError(
+                {
+                    "quantity": "This line has scanned/reserved units bound to it -- "
+                    "change its quantity via the units add/remove actions instead."
+                }
+            )
+        for field, value in data.items():
             setattr(line, field, value)
-        line.save(update_fields=[*self.validated_data.keys(), "updated_at"])
+        line.save(update_fields=[*data.keys(), "updated_at"])
         return line
 
 
@@ -187,3 +202,22 @@ class SaleCreateSerializer(serializers.ModelSerializer):
         if line_serializers:
             SalesTotalsService.recalculate(sale)
         return sale
+
+
+class SaleUnitAddSerializer(serializers.Serializer):
+    """Input for ``POST /sales/{id}/units/`` (Phase 8) -- exactly one of
+    ``code`` (a scanned/typed serial or barcode -- the exact-unit flow,
+    HEXAGARE_FEATURES.md section 24) or ``variant`` (a product-search add,
+    which lets :class:`~apps.sales.services.units.SaleUnitService` pick the
+    oldest available unit). Resolution/reservation happens in the service,
+    not here -- this only shapes the input."""
+
+    code = serializers.CharField(required=False, allow_blank=False)
+    variant = serializers.PrimaryKeyRelatedField(
+        queryset=ProductVariant.objects.all(), required=False
+    )
+
+    def validate(self, attrs):
+        if bool(attrs.get("code")) == bool(attrs.get("variant")):
+            raise serializers.ValidationError("Provide exactly one of `code` or `variant`.")
+        return attrs

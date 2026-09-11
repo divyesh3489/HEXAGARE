@@ -52,6 +52,10 @@ export interface SaleListItem {
   discount_total: string;
   tax_total: string;
   grand_total: string;
+  /** Sum of payments recorded so far (Phase 8) -- non-zero even before a
+   * sale completes, while it's RESERVED/"on hold" pending the rest. */
+  amount_paid: string;
+  balance_due: string;
   created_at: string;
   updated_at: string;
 }

@@ -5,6 +5,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { PageHeader } from "@/components/page-header";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Skeleton } from "@/components/ui/skeleton";
+import { InvoiceDetailPage, InvoicesPage } from "@/features/billing";
 import {
   BulkGeneratePage,
   LabelBatchDetailPage,
@@ -19,7 +20,7 @@ import {
   StockTransfersPage,
 } from "@/features/inventory";
 import { CategoriesPage, ProductDetailPage, ProductsPage } from "@/features/products";
-import { OrdersPage } from "@/features/sales";
+import { NewBillPage, OrdersPage } from "@/features/sales";
 import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
 import { DashboardPage } from "./dashboard";
 import { LoginPage } from "./login";
@@ -38,9 +39,7 @@ const scannerFallback = (
 );
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
-  { path: "sales/new", title: "New Bill", phase: "Phase 8" },
   { path: "sales/returns", title: "Returns", phase: "Phase 10" },
-  { path: "sales/invoices", title: "Invoices", phase: "Phase 8" },
   { path: "purchases/suppliers", title: "Suppliers", phase: "Phase 12" },
   { path: "purchases/orders", title: "Purchase Orders", phase: "Phase 12" },
   { path: "purchases/receive", title: "Receive Stock", phase: "Phase 12" },
@@ -79,6 +78,9 @@ export const router = createBrowserRouter([
           { path: "inventory/ledger", element: <StockLedgerPage /> },
           { path: "inventory/alerts", element: <InventoryAlertsPage /> },
           { path: "sales/orders", element: <OrdersPage /> },
+          { path: "sales/new", element: <NewBillPage /> },
+          { path: "sales/invoices", element: <InvoicesPage /> },
+          { path: "sales/invoices/:invoiceId", element: <InvoiceDetailPage /> },
           {
             path: "barcode/scan",
             element: (

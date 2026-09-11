@@ -65,6 +65,12 @@ export const productsApi = {
 export const variantsApi = {
   list: (productId: number) =>
     api.get<Paginated<ProductVariant>>(`${BASE}/variants/${qs({ product: productId, page_size: 100 })}`),
+  /** Free-text search over sku/name/barcode, restricted to sellable variants
+   * (`?available=1`) — used by the POS product-search add. */
+  search: (search: string) =>
+    api.get<Paginated<ProductVariant>>(
+      `${BASE}/variants/${qs({ search, available: 1, page_size: 10 })}`,
+    ),
   create: (body: Partial<ProductVariant>) =>
     api.post<ProductVariant>(`${BASE}/variants/`, body),
   update: (id: number, body: Partial<ProductVariant>) =>
