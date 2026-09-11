@@ -903,3 +903,98 @@ customer-identity data to attach. Frontend: `frontend/src/features/customers/`
 history and inline edit, and a `CustomerPicker` reused inside New Bill for
 both searching an existing customer and the walk-in quick-add flow),
 replacing the Phase 0 stub route at `/customers`.
+
+## ADR-017 — Purchases: `PurchaseOrder` mirrors `Sale`'s DRAFT-then-locked
+shape, a new `purchases.manage` codename, receiving reuses
+`SerializedInventoryService.generate`, `PurchaseOrderPayment` stays local
+
+**Status:** Accepted (Phase 12)
+
+**Context.** HEXAGARE_FEATURES.md §32/§33: suppliers need a profile and a
+purchase-order/balance history; purchase orders need line items (product,
+variant, SKU, quantity, purchase price, tax, discount), a purchase invoice
+reference, payments/pending-payment tracking, and a "receive stock" flow that
+generates serialized units, assigns them a location, and marks them
+available — linked back to the purchase for cost-basis tracking. The RBAC
+codenames reserved since Phase 1 covered `purchases.view` (read),
+`purchases_receiving` (the receive action) and `suppliers.manage`, but
+nothing covered creating or editing a purchase order itself — every other
+domain in this codebase has both a `.view` and a `.manage` codename
+(`products.view`/`.manage`, `customers.view`/`.manage`, `sales.view` +
+`orders.manage`), so this was a Phase-1 RBAC-planning gap, not a deliberate
+"view implies manage" design.
+
+**Decision.**
+1. **New RBAC codename `purchases.manage`** ("Create, edit and cancel
+   purchase orders"), added to `OPERATIONAL_PERMISSIONS` alongside the three
+   already-reserved codenames. Falls out to Admin/Manager automatically via
+   the existing `ROLE_MANAGER = _ALL - {"users.manage", "settings.manage"}`
+   formula — no other role-table edit needed. Warehouse keeps only
+   `purchases.view` + `purchases_receiving` (it fulfills orders, it doesn't
+   originate or pay for them); Cashier gets none of the purchases codenames,
+   consistent with every other domain it has no access to.
+2. **`PurchaseOrder` has a `DRAFT` status, mirroring `Sale.is_editable`
+   exactly** (`EDITABLE_STATUSES = (DRAFT,)`) — lines (`PurchaseOrderLine`)
+   are freely added/edited/removed while `DRAFT`, then a `place/` action
+   (`DRAFT -> ORDERED`, `purchases.manage`) locks them, the same shape as
+   `SaleLine` under ADR-012. `ORDERED -> PARTIALLY_RECEIVED -> RECEIVED` are
+   driven only by `ReceiveStockService.receive`; `CANCELLED` is reachable
+   from `DRAFT`/`ORDERED`/`PARTIALLY_RECEIVED` (`cancel/`, `purchases.manage`)
+   — cancelling a partially-received order does **not** reverse the units
+   already received, the same non-reversal stance `Sale.cancel` takes toward
+   already-`SOLD` units (it only releases `RESERVED` ones).
+3. **`ReceiveStockService.receive`** (`apps/purchases/services.py`) is the
+   only path that creates units for a purchase order — one atomic call per
+   receiving session (`{line, quantity, location}` entries), all-or-nothing.
+   Every unit is created via the same allocator every other unit-creation
+   path uses,
+   `apps.products.services.serialized_inventory.SerializedInventoryService.generate`,
+   landing directly in `AVAILABLE` status per §33's flow ("Assign Location ->
+   Mark Units Available") with `purchase_cost` set from the line's
+   `unit_price` — `SerializedUnit.purchase_cost` already existed (unused
+   until now) as exactly this field. A new join row,
+   `PurchaseOrderLineUnit` (one per received unit, `PROTECT` FK to the line,
+   `OneToOneField` to the unit), links each unit back to the purchase order
+   it came from for traceability — mirrors `apps.sales.models.SaleLineUnit`,
+   living in `apps.purchases` rather than on `SerializedUnit` itself so
+   `apps.products` never has to import `apps.purchases` (the established
+   one-directional cross-app reference convention).
+4. **`PurchaseOrderPayment` is a new model local to `apps.purchases`, not a
+   reuse of `apps.billing.Payment`.** `billing.Payment.sale` is a
+   hard-required `PROTECT` FK to `Sale`; making it nullable and adding a
+   `purchase_order` FK would touch a tested, unrelated app's core model for
+   no shared benefit, and `apps.purchases` has no reason to depend on
+   `apps.billing`. `PurchaseOrderPayment` reuses the same `Method`/`Type`
+   vocabulary (Cash/UPI/Card/Bank transfer/Credit; Payment/Refund) as a
+   parallel, independently-owned model — `PurchaseOrder.amount_paid`/
+   `balance_due` are computed properties summing it, the same shape as
+   `Sale.amount_paid`/`balance_due`.
+5. **A `PurchaseOrder`'s `subtotal`/`discount_total`/`tax_total`/
+   `grand_total` are a rebuildable cache written only by
+   `PurchaseTotalsService.recalculate`**, a row-locked recompute, the exact
+   shape of `apps.sales.services.totals.SalesTotalsService`. Unlike
+   `SaleLine`, `PurchaseOrderLine.unit_price`/`tax_rate` are always
+   client-supplied at line-entry time (a purchase price is what the
+   supplier quoted, not a catalog value) rather than snapshotted from the
+   variant — though the frontend pre-fills them from the variant's
+   `effective_purchase_price`/`effective_tax_rate` as a starting suggestion.
+
+**Consequences.** `apps/suppliers` gained a real `Supplier` model (name,
+company, phone, email, address, GSTIN, payment terms, notes) with
+read-on-aggregate purchase-history figures in `apps.suppliers.services`
+(`total_purchase_value`, `total_paid`, `outstanding_amount`), the same
+computed-not-cached pattern as `apps.customers.services` — reads gated
+`purchases.view` (suppliers are viewed alongside purchase orders, matching
+the nav grouping already in `nav.ts`), writes gated `suppliers.manage`;
+deletion blocked while the supplier has any purchase-order history, same
+guard style as `inventory.Location`/`customers.Customer`. API mounted at
+`/api/v1/suppliers/` and `/api/v1/purchases/` (own top-level prefixes, one
+`include()` per app). Frontend: `frontend/src/features/suppliers/` (list +
+detail, structurally identical to Phase 11 Customers) and
+`frontend/src/features/purchases/` (PO list, create-with-nested-lines form,
+detail with place/receive-link/cancel/payment actions, and a Receive Stock
+screen that — unlike Phase 5's bulk-generate wizard, which picks one variant
+and a manual quantity — starts from an `ORDERED`/`PARTIALLY_RECEIVED`
+purchase order and receives across all of its pending lines in one call),
+replacing the three Phase 0 stub routes at `/purchases/suppliers`,
+`/purchases/orders` and `/purchases/receive`.

@@ -592,5 +592,119 @@ inline create), `CustomerDetailPage` (profile edit, aggregates, order
 history, serial history), `CustomerPicker` (search-or-walk-in-quick-add,
 reused inside New Bill) — replacing the Phase 0 stub route at `/customers`.
 
-## Purchases / Suppliers / Expenses / Reports / Notifications
+## Suppliers (`apps/suppliers`, Phase 12, ADR-017)
+
+`Supplier` — `name` (required), `company`, `phone`, `email`, `address`,
+`gstin`, `payment_terms`, `notes`, `created_at`/`updated_at`. A supplier with
+any purchase-order history cannot be deleted (`SupplierViewSet.perform_destroy`
+blocks it with a friendly `validation_error`, same guard style as
+`inventory.Location`/`customers.Customer`).
+
+### `apps/suppliers/services.py` — purchase-history aggregation
+
+Computed on read (not cached columns), walking `apps.purchases` reverse
+relations at call time — same one-directional pattern as
+`apps.customers.services`:
+
+- `total_purchase_value(supplier)` — sum of `grand_total` across the
+  supplier's purchase orders, excluding `DRAFT`/`CANCELLED`.
+- `total_paid(supplier)` — sum of `amount_paid` across those orders.
+- `outstanding_amount(supplier)` — sum of `balance_due` across those orders
+  (only positive balances).
+
+### API (`/api/v1/suppliers/`)
+
+Standard CRUD. List/retrieve gated `purchases.view` (suppliers are viewed
+alongside purchase orders, matching the nav grouping); create/update/delete
+gated `suppliers.manage`. Search on `name`/`company`/`phone`/`email`/`gstin`.
+`SupplierDetailSerializer` returns the profile, the three aggregate figures,
+and every purchase order (regardless of status — the aggregates above are
+what excludes `DRAFT`/`CANCELLED`) in one response.
+
+Frontend: `frontend/src/features/suppliers/` — `SuppliersPage` (list +
+inline create), `SupplierDetailPage` (profile edit, aggregates, order
+history) — replacing the Phase 0 stub route at `/purchases/suppliers`.
+
+## Purchases (`apps/purchases`, Phase 12, ADR-017)
+
+`PurchaseOrder` — `supplier` FK (`PROTECT`), `status`
+(`DRAFT -> ORDERED -> PARTIALLY_RECEIVED -> RECEIVED`, `CANCELLED` reachable
+from any of the first three), `reference`, `invoice_number`, `note`,
+`created_by`. `subtotal`/`discount_total`/`tax_total`/`grand_total` are a
+rebuildable cache written only by `PurchaseTotalsService.recalculate` (a
+row-locked recompute, the same shape as `SalesTotalsService`).
+`amount_paid`/`balance_due` are computed properties summing the order's
+`PurchaseOrderPayment` rows. `is_editable` (`DRAFT` only, mirrors
+`Sale.is_editable`) gates line mutation; `is_receivable`
+(`ORDERED`/`PARTIALLY_RECEIVED`) gates the receive action.
+
+`PurchaseOrderLine` — `variant` FK (`PROTECT`), `quantity_ordered`,
+`quantity_received`, `unit_price`, `tax_rate`, `discount_amount`. Unlike
+`SaleLine`, `unit_price`/`tax_rate` are always client-supplied at line-entry
+time (a purchase price is what the supplier quoted, not snapshotted from the
+catalog) — the frontend pre-fills them from the variant's
+`effective_purchase_price`/`effective_tax_rate` as a starting suggestion,
+editable before submit. `net_amount`/`taxable_value`/`tax_amount` follow the
+same tax-inclusive-`unit_price` convention as `SaleLine`.
+
+`PurchaseOrderLineUnit` — `line` FK (`PROTECT`), `serialized_unit`
+(`OneToOneField`, `PROTECT`). Links one received physical unit back to the
+purchase-order line it came from, for cost-basis traceability — mirrors
+`apps.sales.models.SaleLineUnit`. A unit is only ever received once, so this
+is a permanent, never-deleted record.
+
+`PurchaseOrderPayment` — `purchase_order` FK (`PROTECT`), `method`
+(Cash/UPI/Card/Bank transfer/Credit), `type` (Payment/Refund), `amount`,
+`reference`, `note`, `created_by`. A standalone model, **not** a reuse of
+`apps.billing.Payment` (that model's `sale` FK is a hard-required `PROTECT`
+field tied to `Sale` — see ADR-017).
+
+### `apps/purchases/services.py`
+
+- `PurchaseTotalsService.recalculate(purchase_order)` — row-locked
+  recompute of the four derived totals from the order's current lines.
+- `ReceiveStockService.receive(purchase_order, *, receipts, actor)` — the
+  only path that creates units for a purchase order. One atomic call per
+  receiving session; `receipts` is a list of `{line, quantity, location}`.
+  Validates every entry's `quantity` against `line.quantity_pending` up
+  front (the whole call fails before any unit is generated if one entry is
+  bad), then for each unit calls
+  `SerializedInventoryService.generate(variant=line.variant,
+  location=..., status=AVAILABLE, purchase_cost=line.unit_price, actor=...)`
+  — the same allocator every other unit-creation path uses (Phase 3 single
+  units, Phase 5 bulk-generate) — landing units directly in `AVAILABLE`
+  per HEXAGARE_FEATURES.md §33's flow ("Assign Location -> Mark Units
+  Available"), creates the `PurchaseOrderLineUnit` link, and bumps
+  `quantity_received`. Updates `PurchaseOrder.status` to `RECEIVED` once
+  every line is fully received, else `PARTIALLY_RECEIVED`.
+
+### API (`/api/v1/purchases/`)
+
+- `orders/` — list/retrieve (`purchases.view`); create (`purchases.manage`,
+  optionally with a `lines` convenience list, same shape as
+  `SaleCreateSerializer`).
+- `orders/{id}/lines/` POST, `orders/{id}/lines/{line_id}/` PATCH/DELETE —
+  only while `DRAFT` (`purchases.manage`).
+- `orders/{id}/place/` POST — `DRAFT -> ORDERED` (`purchases.manage`).
+- `orders/{id}/receive/` POST — `{"receipts": [{"line", "quantity",
+  "location"}, ...]}` (`purchases_receiving`).
+- `orders/{id}/payments/` POST — record a payment/refund (`purchases.manage`).
+- `orders/{id}/cancel/` POST — from `DRAFT`/`ORDERED`/`PARTIALLY_RECEIVED`
+  only; does not reverse units already received (`purchases.manage`).
+
+RBAC: `purchases.view`/`purchases_receiving` reserved since Phase 1;
+`purchases.manage` added this phase (ADR-017) — Admin/Manager hold it
+automatically via the existing `_ALL - {...}` role formula, Warehouse keeps
+only `purchases.view`/`purchases_receiving`, Cashier holds none of them.
+
+Frontend: `frontend/src/features/purchases/` — `PurchaseOrdersPage` (list),
+`NewPurchaseOrderPage` (supplier + build-a-line-list-then-submit form),
+`PurchaseOrderDetailPage` (lines, payments, place/receive-link/cancel
+actions), `ReceiveStockPage` (pick a receivable order, then a per-line
+quantity + shared location form — unlike Phase 5's bulk-generate wizard,
+which is sourced from a single manually-chosen variant and quantity, this
+is sourced from the order's own pending lines) — replacing the Phase 0 stub
+routes at `/purchases/orders` and `/purchases/receive`.
+
+## Expenses / Reports / Notifications
 _Not yet built (later phases)._ Scaffold apps only.

@@ -44,6 +44,7 @@ OPERATIONAL_PERMISSIONS: dict[str, str] = {
     "billing.manage": "Create and cancel invoices, record payments",
     # -- Purchases / suppliers --------------------------------------
     "purchases.view": "View purchase orders and suppliers",
+    "purchases.manage": "Create, edit and cancel purchase orders",
     "purchases_receiving": "Receive stock against a purchase order",  # reserved (Phase 12)
     "suppliers.manage": "Create and edit suppliers",
     # -- Finance -----------------------------------------------------

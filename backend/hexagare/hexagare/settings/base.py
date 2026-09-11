@@ -225,6 +225,11 @@ SPECTACULAR_SETTINGS = {
         "AmazonImportBatchStatusEnum": "apps.integrations.amazon.models.AmazonImportBatch.Status",
         "ReturnUnitConditionEnum": "apps.billing.models.ReturnUnit.Condition",
         "CustomerTypeEnum": "apps.customers.models.Customer.Type",
+        "PurchaseOrderStatusEnum": "apps.purchases.models.PurchaseOrder.Status",
+        # PurchaseOrderPayment.method/type share billing.Payment.Method/Type's
+        # exact (value, label) sets -- same reasoning as Invoice.status above,
+        # no override needed (a new one for an identical set is flagged as an
+        # ambiguous duplicate).
     },
 }
 

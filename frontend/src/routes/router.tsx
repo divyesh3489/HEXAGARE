@@ -21,9 +21,16 @@ import {
   StockTransfersPage,
 } from "@/features/inventory";
 import { CategoriesPage, ProductDetailPage, ProductsPage } from "@/features/products";
+import {
+  NewPurchaseOrderPage,
+  PurchaseOrderDetailPage,
+  PurchaseOrdersPage,
+  ReceiveStockPage,
+} from "@/features/purchases";
 import { NewReturnPage, ReturnDetailPage, ReturnsPage } from "@/features/returns";
 import { NewBillPage, OrdersPage } from "@/features/sales";
 import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
+import { SupplierDetailPage, SuppliersPage } from "@/features/suppliers";
 import { DashboardPage } from "./dashboard";
 import { LoginPage } from "./login";
 import { StubPage } from "./stub-page";
@@ -63,9 +70,6 @@ const scannerFallback = (
 );
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
-  { path: "purchases/suppliers", title: "Suppliers", phase: "Phase 12" },
-  { path: "purchases/orders", title: "Purchase Orders", phase: "Phase 12" },
-  { path: "purchases/receive", title: "Receive Stock", phase: "Phase 12" },
   { path: "finance/payments", title: "Payments", phase: "Phase 8" },
   { path: "finance/expenses", title: "Expenses", phase: "Phase 13" },
   { path: "finance/profit", title: "Profit", phase: "Phase 13" },
@@ -108,6 +112,12 @@ export const router = createBrowserRouter([
           { path: "sales/returns/:returnId", element: <ReturnDetailPage /> },
           { path: "customers", element: <CustomersPage /> },
           { path: "customers/:customerId", element: <CustomerDetailPage /> },
+          { path: "purchases/suppliers", element: <SuppliersPage /> },
+          { path: "purchases/suppliers/:supplierId", element: <SupplierDetailPage /> },
+          { path: "purchases/orders", element: <PurchaseOrdersPage /> },
+          { path: "purchases/orders/new", element: <NewPurchaseOrderPage /> },
+          { path: "purchases/orders/:orderId", element: <PurchaseOrderDetailPage /> },
+          { path: "purchases/receive", element: <ReceiveStockPage /> },
           {
             path: "barcode/scan",
             element: (
