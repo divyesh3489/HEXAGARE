@@ -13,6 +13,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 # One include() per domain app. Keep this list alphabetical.
 api_v1_patterns = [
     path("auth/", include("apps.accounts.urls")),
+    path("billing/", include("apps.billing.urls")),
     path("inventory/", include("apps.inventory.urls")),
     path("products/", include("apps.products.urls")),
     path("sales/", include("apps.sales.urls")),

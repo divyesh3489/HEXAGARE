@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -8,7 +9,16 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSales, useSalesChannels } from "./hooks";
 import { saleStatusVariant } from "./status";
-import { SALE_STATUSES } from "./types";
+import { SALE_STATUSES, type SaleStatus } from "./types";
+
+/** DRAFT is still being built (full cart edit); RESERVED is on hold pending
+ * more payment (cart locked, payment only) -- both resume into New Bill,
+ * which reads the sale's own status to decide which mode to show. */
+function resumeLabel(status: SaleStatus): string | null {
+  if (status === "DRAFT") return "Resume";
+  if (status === "RESERVED") return "Collect payment";
+  return null;
+}
 
 const PAGE_SIZE = 20;
 
@@ -95,13 +105,14 @@ export function OrdersPage() {
                     <th className="px-4 py-3 text-right font-medium">Items</th>
                     <th className="px-4 py-3 text-right font-medium">Total</th>
                     <th className="px-4 py-3 font-medium">Created</th>
+                    <th className="px-4 py-3" />
                   </tr>
                 </thead>
                 <tbody>
                   {isPending &&
                     Array.from({ length: 8 }).map((_, i) => (
                       <tr key={i} className="border-b">
-                        {Array.from({ length: 6 }).map((__, j) => (
+                        {Array.from({ length: 7 }).map((__, j) => (
                           <td key={j} className="px-4 py-3">
                             <Skeleton className="h-4 w-16" />
                           </td>
@@ -112,7 +123,7 @@ export function OrdersPage() {
                   {!isPending && orders.length === 0 && (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={7}
                         className="px-4 py-12 text-center text-sm text-muted-foreground"
                       >
                         No orders{channel || status ? " match these filters" : " yet"}.
@@ -120,22 +131,35 @@ export function OrdersPage() {
                     </tr>
                   )}
 
-                  {orders.map((order) => (
-                    <tr key={order.id} className="border-b last:border-0">
-                      <td className="px-4 py-3 font-mono text-xs">#{order.id}</td>
-                      <td className="px-4 py-3">{order.sales_channel_name}</td>
-                      <td className="px-4 py-3">
-                        <Badge variant={saleStatusVariant(order.status)}>{order.status}</Badge>
-                      </td>
-                      <td className="px-4 py-3 text-right">{order.line_count}</td>
-                      <td className="px-4 py-3 text-right font-medium">
-                        ₹{Number(order.grand_total).toLocaleString("en-IN")}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {new Date(order.created_at).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
+                  {orders.map((order) => {
+                    const label = resumeLabel(order.status);
+                    return (
+                      <tr key={order.id} className="border-b last:border-0">
+                        <td className="px-4 py-3 font-mono text-xs">#{order.id}</td>
+                        <td className="px-4 py-3">{order.sales_channel_name}</td>
+                        <td className="px-4 py-3">
+                          <Badge variant={saleStatusVariant(order.status)}>{order.status}</Badge>
+                        </td>
+                        <td className="px-4 py-3 text-right">{order.line_count}</td>
+                        <td className="px-4 py-3 text-right font-medium">
+                          ₹{Number(order.grand_total).toLocaleString("en-IN")}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          {new Date(order.created_at).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {label && (
+                            <Link
+                              to={`/sales/new?sale=${order.id}`}
+                              className="text-sm font-medium text-primary hover:underline"
+                            >
+                              {label}
+                            </Link>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

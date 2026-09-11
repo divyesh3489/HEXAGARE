@@ -211,6 +211,15 @@ SPECTACULAR_SETTINGS = {
         "LabelBatchStatusEnum": "apps.products.models.LabelBatch.Status",
         "LabelBatchBarcodeTypeEnum": "apps.products.models.LabelBatch.BarcodeType",
         "SaleStatusEnum": "apps.sales.models.Sale.Status",
+        # Invoice.status/InvoiceDelivery.status share LabelBatch.status's exact
+        # (value, label) set (PENDING/READY/FAILED) -- no override needed, they
+        # already resolve to the existing LabelBatchStatusEnum name. A *new*
+        # override here for the identical set is flagged by --fail-on-warn as
+        # an ambiguous duplicate, so it's deliberately left out.
+        "PaymentMethodEnum": "apps.billing.models.Payment.Method",
+        "PaymentTypeEnum": "apps.billing.models.Payment.Type",
+        "InvoiceDeliveryChannelEnum": "apps.billing.models.InvoiceDelivery.Channel",
+        "InvoiceDeliveryStatusEnum": "apps.billing.models.InvoiceDelivery.Status",
     },
 }
 
@@ -232,6 +241,8 @@ CELERY_TIMEZONE = TIME_ZONE
 HEXAGARE_SKU_PREFIX = env("HEXAGARE_SKU_PREFIX", default="HEX")
 HEXAGARE_SERIAL_PREFIX = env("HEXAGARE_SERIAL_PREFIX", default="HX")
 HEXAGARE_SERIAL_PADDING = env.int("HEXAGARE_SERIAL_PADDING", default=6)
+HEXAGARE_INVOICE_PREFIX = env("HEXAGARE_INVOICE_PREFIX", default="HEX-INV")
+HEXAGARE_INVOICE_PADDING = env.int("HEXAGARE_INVOICE_PADDING", default=6)
 
 # --------------------------------------------------------------------------- #
 # Email / frontend links

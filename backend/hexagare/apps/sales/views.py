@@ -6,7 +6,9 @@
 - ``sales/{id}/lines/``              POST   add a line (only while DRAFT)
 - ``sales/{id}/lines/{line_id}/``    PATCH  edit quantity / discount
 - ``sales/{id}/lines/{line_id}/``    DELETE remove the line
-- ``sales/{id}/cancel/``             POST   cancel the sale
+- ``sales/{id}/units/``              POST   scan/search-add one exact unit (Phase 8)
+- ``sales/{id}/units/{unit_id}/``    DELETE release/unbind one exact unit (Phase 8)
+- ``sales/{id}/cancel/``             POST   cancel the sale (releases any bound units)
 """
 
 from __future__ import annotations
@@ -28,8 +30,10 @@ from .serializers import (
     SaleLineWriteSerializer,
     SaleListSerializer,
     SalesChannelSerializer,
+    SaleUnitAddSerializer,
 )
 from .services.totals import SalesTotalsService
+from .services.units import SaleUnitService
 
 _VIEW = "sales.view"
 _MANAGE = "orders.manage"
@@ -117,7 +121,14 @@ class SaleViewSet(
         sale = self._editable_sale(pk)
         line = get_object_or_404(SaleLine, pk=line_id, sale=sale)
         if request.method == "DELETE":
-            line.delete()
+            # A unit-backed line must release its reservations, not just
+            # cascade-delete the join rows and leave units stuck RESERVED.
+            unit_ids = list(line.units.values_list("serialized_unit_id", flat=True))
+            if unit_ids:
+                for unit_id in unit_ids:
+                    SaleUnitService.remove(sale, unit_id, actor=request.user)
+            else:
+                line.delete()
         else:
             serializer = SaleLineUpdateSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
@@ -125,11 +136,37 @@ class SaleViewSet(
         SalesTotalsService.recalculate(sale)
         return self._detail_response(sale)
 
+    @extend_schema(request=SaleUnitAddSerializer, responses=SaleDetailSerializer)
+    @action(detail=True, methods=["post"], url_path="units")
+    def add_unit(self, request, pk=None):
+        sale = self._editable_sale(pk)
+        serializer = SaleUnitAddSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        SaleUnitService.add(
+            sale,
+            code=serializer.validated_data.get("code"),
+            variant=serializer.validated_data.get("variant"),
+            actor=request.user,
+        )
+        return self._detail_response(sale)
+
+    @extend_schema(request=None, responses=SaleDetailSerializer)
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path=r"units/(?P<unit_id>[^/.]+)",
+    )
+    def remove_unit(self, request, pk=None, unit_id=None):
+        sale = self._editable_sale(pk)
+        SaleUnitService.remove(sale, unit_id, actor=request.user)
+        return self._detail_response(sale)
+
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         sale = self.get_object()
         if sale.status in {Sale.Status.CANCELLED, Sale.Status.COMPLETED, Sale.Status.REFUNDED}:
             raise ValidationError(f"Sale is already {sale.status} -- it cannot be cancelled.")
+        SaleUnitService.release_all(sale, actor=request.user)
         sale.status = Sale.Status.CANCELLED
         sale.save(update_fields=["status", "updated_at"])
         return self._detail_response(sale)

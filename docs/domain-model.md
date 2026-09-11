@@ -260,9 +260,9 @@ phase.
 
 ## Sales and billing
 
-**`SalesChannel` / `Sale` / `SaleLine` built (Phase 7, ADR-012).**
-`Payment`/`Invoice`/`InvoiceDelivery`, and wiring sale completion (reservation,
-the inventory ledger, serialized-unit `sell()`) are still Phase 8.
+**`SalesChannel` / `Sale` / `SaleLine` built (Phase 7, ADR-012). Reservation
+(`SaleLineUnit`), `Payment`/`Invoice`/`InvoiceDelivery`, and the "Complete
+Sale" flow built (Phase 8, ADR-013).**
 
 - **`SalesChannel`** (`apps/sales`) — `code`/`name`/`is_active`, seeded via a
   `post_migrate` hook (`apps/sales/bootstrap.py`, rows `AMAZON`/`OFFLINE`), the
@@ -283,24 +283,150 @@ the inventory ledger, serialized-unit `sell()`) are still Phase 8.
   (`unit_price`/`tax_rate` copied from the variant's `effective_*` at add-time,
   never re-read live). GST-inclusive, same convention as
   `ProductVariant.base_price`/`gst_amount`: taxable value and tax are derived
-  backward from `unit_price` via `taxable_value`/`tax_amount` properties.
-  **No `serialized_unit` FK yet** — Phase 8 owns that schema decision once the
-  `AVAILABLE → RESERVED → SOLD` flow is actually built. No `customer` FK
-  either (`apps.customers` doesn't exist until Phase 11).
+  backward from `unit_price` via `taxable_value`/`tax_amount` properties, plus
+  `cgst_amount`/`sgst_amount` (an even split — intra-state only, ADR-013).
+- **`SaleLineUnit`** (Phase 8, ADR-013) — one row per physical
+  `SerializedUnit` bound to a `SaleLine`: `sale_line` FK (`CASCADE`) ×
+  `serialized_unit` **`OneToOneField`** (`PROTECT`), so a unit is bound to at
+  most one line anywhere. `SaleLine.quantity` is kept in sync with
+  `units.count()` by the service layer — a manual `quantity` edit is rejected
+  once a line has bound units. Rows created once a sale completes are a
+  **permanent record** (never deleted); rows for a still-`DRAFT` line are
+  deleted when a unit/line is removed or the sale is cancelled.
+
+### Reservation (`apps/sales/services/units.py:SaleUnitService`)
+
+The **only** path that adds/removes a unit from a sale's cart. `add(sale, *,
+code=None, variant=None, actor)`: `code` (a scanned/typed serial or barcode —
+the exact-unit flow, HEXAGARE_FEATURES.md §24) resolves via
+`apps.products.services.serial_numbers.resolve_unit`; `variant` (a
+product-search add) picks the oldest `AVAILABLE` unit for that variant
+(FIFO by `sequence`). Either way: find-or-create the sale's line for that
+variant, `SerializedInventoryService.reserve()` the unit (`AVAILABLE ->
+RESERVED`, ledger updated), create the `SaleLineUnit` row, sync `quantity`,
+`SalesTotalsService.recalculate`. `remove(sale, unit_id, actor)` is the
+inverse (`release()`, delete the join row, deletes the line once empty).
+`release_all(sale, actor)` — used by `SaleViewSet.cancel` — releases every
+bound unit on a sale being discarded.
+
+A concurrency race (two cashiers grabbing the same "oldest available" unit) is
+resolved safely by `reserve()`'s own row lock: the loser gets a clean
+`validation_error` to retry, never a double-reservation.
 
 ### API (`/api/v1/sales/`)
 
 - `channels/` (GET, `sales.view`) — read-only list of sales channels.
 - `` (list/retrieve, `sales.view`; create, `orders.manage`) — `?channel=<code>`
   `?status=<STATUS>` filters. Create accepts an optional nested `lines` list.
-- `{id}/lines/` (POST, `orders.manage`) — add a line to a `DRAFT` sale;
-  snapshots pricing, then calls `SalesTotalsService.recalculate`.
+- `{id}/lines/` (POST, `orders.manage`) — add a line to a `DRAFT` sale
+  (quantity, no unit binding — a draft/quote line, not yet sellable).
 - `{id}/lines/{line_id}/` (PATCH/DELETE, `orders.manage`) — edit
-  quantity/discount or remove a line; same recalculation.
-- `{id}/cancel/` (POST, `orders.manage`) — sets `status=CANCELLED`.
+  quantity/discount (rejected once the line has bound units) or remove a line
+  (releases its bound units first); same recalculation.
+- `{id}/units/` (POST, `orders.manage`, Phase 8) — scan/search-add one exact
+  unit: `{"code": "..."}` or `{"variant": <id>}`.
+- `{id}/units/{unit_id}/` (DELETE, `orders.manage`, Phase 8) — release/unbind
+  one exact unit.
+- `{id}/cancel/` (POST, `orders.manage`) — sets `status=CANCELLED` and
+  releases every bound unit.
 
-RBAC: `sales.view` (reads), `orders.manage` (create/edit/cancel). Both
-codenames were already reserved in `rbac.py` — no change this phase.
+RBAC: `sales.view` (reads), `orders.manage` (create/edit/cancel, including the
+new `units/` actions). Both codenames were already reserved in `rbac.py` — no
+change this phase.
+
+## Billing (`apps/billing`, Phase 8, ADR-013 + ADR-013 addendum)
+
+- **`Payment`** — `sale` FK (`PROTECT`), `method` (`CASH`/`UPI`/`CARD`/
+  `BANK_TRANSFER`/`CREDIT`), `type` (`PAYMENT`/`REFUND` — `REFUND` reused by
+  Phase 10 Returns rather than a new model), `amount` (always positive),
+  `reference`, `note`. Multiple rows per sale support split-tender payment.
+- **`Invoice`** — `sale` `OneToOneField`, `invoice_number` (unique,
+  `<HEXAGARE_INVOICE_PREFIX>-<padded sequence>`, e.g. `HEX-INV-001245`,
+  allocated by `apps/billing/services/numbering.py:allocate_invoice_number`
+  under a Postgres advisory lock — same shape as serial allocation (ADR-008),
+  a distinct lock namespace `1002`), a **snapshot** of
+  `subtotal`/`discount_total`/`tax_total`/`grand_total` at completion time
+  (an invoice is a point-in-time document, same convention as `SaleLine`'s
+  pricing snapshot), and `status`/`pdf_file`/`pdf_generated_at`/
+  `error_message` mirroring `apps.products.models.LabelBatch`'s `PENDING ->
+  READY`/`FAILED` shape. `amount_paid`/`balance_due` delegate to
+  `Sale.amount_paid`/`Sale.balance_due` (see below) rather than duplicating
+  the computation.
+- **`InvoiceDelivery`** — `invoice` FK, `channel` (`EMAIL`/`WHATSAPP`),
+  `status` (`PENDING`/`SENT`/`FAILED`), `sent_at`, `error_message`. **Schema
+  only this phase** — Phase 15 (Notifications) is what actually creates/
+  updates rows here when "Send invoice" goes out.
+- **`Sale.amount_paid`/`Sale.balance_due`** (`apps.sales.models`, not
+  `apps.billing`) — computed properties walking the reverse `sale.payments`
+  accessor (a refund-type row subtracts). Deliberately live on `Sale`, not
+  `Invoice`: a sale can carry payment before an invoice exists at all, while
+  it's `RESERVED` ("on hold" — see below).
+
+### Complete Sale / hold / resume (`apps/billing/services/checkout.py:CompleteSaleService`)
+
+The "Complete Sale" flow (HEXAGARE_FEATURES.md §26, rule 7) **only** sells
+units and generates an invoice once payment actually covers the total — a
+partial/short payment leaves the sale **on hold**, not completed. This was a
+post-launch correction to the original Phase 8 pass (which wrongly treated
+any recorded payment as enough to complete); see the ADR-013 addendum.
+
+`CompleteSaleService.complete(sale, *, payments, actor)` — accepts a
+`DRAFT` or `RESERVED` sale. One atomic call: locks the `Sale` row, requires
+**every line fully unit-backed** (`quantity == units.count()` — a line built
+through the generic `POST lines/` endpoint can't be sold until it's
+scanned/bound), `SalesTotalsService.recalculate`, records the given
+`Payment` row(s), then branches on `sale.amount_paid` (including what was
+just recorded) vs `sale.grand_total`:
+
+- **Short** → `Sale.status = RESERVED` ("on hold"); units stay `RESERVED`,
+  no `Invoice` is created. The sale can be resumed later — `complete` is
+  called again (more `payments`) until it clears.
+- **Covered** → `SerializedInventoryService.sell()` for every bound unit
+  (`RESERVED`/`IN_TRANSIT -> SOLD`, ledger updated), allocates the invoice
+  number, creates the `Invoice` (`PENDING`), sets `Sale.status = COMPLETED`.
+  `transaction.on_commit` enqueues `apps.billing.tasks.render_invoice_pdf` —
+  commit-first-enqueue-after, per CLAUDE.md's Celery pattern. A PDF render
+  failure never unwinds the sale (units are already sold, payment already
+  recorded) — it marks the invoice `FAILED`, same recoverable shape as
+  `render_label_pdf`.
+
+A `CREDIT`-method `Payment` counts toward `amount_paid` like any other
+method — a cashier recording one for the deferred amount completes the sale
+(goods considered sold, the credit is the business's own receivable to
+collect later), matching HEXAGARE_FEATURES.md §23 listing Credit/Due as an
+equal payment method. What must never happen is an *unrecorded* shortfall
+being treated as covered.
+
+`CompleteSaleService.record_payment(sale, *, payments, actor)` — the
+separate path for a sale that's already `COMPLETED`: adds `Payment` row(s)
+only (settling a receivable, e.g. a customer paying back a `CREDIT`
+balance). Units and the invoice are untouched.
+
+`apps/billing/services/invoice_pdf.py:build_invoice_pdf` renders the GST
+invoice (ReportLab, same rationale as `apps.products.services.labels`,
+ADR-010) — header, one row per line with its serial number(s), taxable
+value/CGST/SGST/total (HEXAGARE_FEATURES.md §28's own example), payment
+summary. **CGST/SGST split only, no IGST** — inter-state detection needs a
+customer/business "place of supply", which doesn't exist until
+`apps.customers` (Phase 11); documented simplification (ADR-013).
+
+### API (`/api/v1/billing/`)
+
+- `checkout/` (POST, `billing.manage`) — `{"sale": <id>, "payments":
+  [{"method", "amount", "reference"?, "note"?}]}` -> `{"sale": ..., "invoice":
+  ... | null}`. Dispatches on the sale's current status: `DRAFT`/`RESERVED`
+  goes through `complete` (`invoice` is `null` while on hold); `COMPLETED`
+  goes through `record_payment` (settling a receivable, `invoice` is the
+  existing one with a lower `balance_due`).
+- `invoices/` (list/retrieve, `billing.view`) — `?sale=` `?status=` filters.
+  Only ever lists sales that actually completed — a held sale has no row
+  here yet.
+- `invoices/{id}/pdf/` (GET, `billing.view`) — download the rendered PDF
+  (only once `status == READY`).
+- `payments/` (list/retrieve, `billing.view`) — `?sale=` filter.
+
+RBAC: `billing.view` (reads), `billing.manage` (checkout). Both codenames were
+already reserved in `rbac.py` — no change this phase.
 
 ## Integrations (Amazon)
 _Not yet built (Phase 9)._ `AmazonOrderSettlement` holds channel-specific
