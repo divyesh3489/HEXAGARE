@@ -9,7 +9,7 @@ from rest_framework import serializers
 from apps.sales.models import Sale
 from apps.sales.serializers import SaleDetailSerializer
 
-from .models import Invoice, InvoiceDelivery, Payment
+from .models import Invoice, InvoiceDelivery, Payment, Return, ReturnUnit
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -99,3 +99,115 @@ class CheckoutResultSerializer(serializers.Serializer):
 
     sale = SaleDetailSerializer(read_only=True)
     invoice = InvoiceDetailSerializer(read_only=True, allow_null=True)
+
+
+class ReturnResolveSerializer(serializers.Serializer):
+    """Output of ``GET /billing/returns/resolve/?code=`` -- the read-only
+    preview shown right after a scan, before the cashier confirms the
+    return."""
+
+    serial_number = serializers.CharField(source="unit.serial_number", read_only=True)
+    sku = serializers.CharField(source="unit.variant.sku", read_only=True)
+    product_name = serializers.CharField(source="unit.variant.product.name", read_only=True)
+    sale = serializers.IntegerField(source="sale.id", read_only=True)
+    sale_line = serializers.IntegerField(source="sale_line_unit.sale_line_id", read_only=True)
+    unit_price = serializers.DecimalField(
+        source="sale_line_unit.sale_line.unit_price", max_digits=10, decimal_places=2,
+        read_only=True,
+    )
+    suggested_refund_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True
+    )
+
+
+class ReturnUnitSerializer(serializers.ModelSerializer):
+    serial_number = serializers.CharField(source="serialized_unit.serial_number", read_only=True)
+    sku = serializers.CharField(source="serialized_unit.variant.sku", read_only=True)
+    product_name = serializers.CharField(
+        source="serialized_unit.variant.product.name", read_only=True
+    )
+    sale_line = serializers.IntegerField(source="sale_line_unit.sale_line_id", read_only=True)
+
+    class Meta:
+        model = ReturnUnit
+        fields = [
+            "id",
+            "serialized_unit",
+            "serial_number",
+            "sku",
+            "product_name",
+            "sale_line",
+            "refund_amount",
+            "condition",
+            "inspected_at",
+            "inspected_by",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class ReturnListSerializer(serializers.ModelSerializer):
+    refund_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    unit_count = serializers.IntegerField(source="units.count", read_only=True)
+    pending_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Return
+        fields = [
+            "id",
+            "sale",
+            "reason",
+            "note",
+            "refund_total",
+            "unit_count",
+            "pending_count",
+            "created_by",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_pending_count(self, obj: Return) -> int:
+        return sum(1 for unit in obj.units.all() if unit.condition == ReturnUnit.Condition.PENDING)
+
+
+class ReturnDetailSerializer(ReturnListSerializer):
+    sale_detail = SaleDetailSerializer(source="sale", read_only=True)
+    units = ReturnUnitSerializer(many=True, read_only=True)
+
+    class Meta(ReturnListSerializer.Meta):
+        fields = ReturnListSerializer.Meta.fields + ["sale_detail", "units"]
+        read_only_fields = fields
+
+
+class ReturnEntrySerializer(serializers.Serializer):
+    """One scanned unit for ``ReturnCreateSerializer.entries`` -- mirrors
+    ``PaymentEntrySerializer``'s "list of rows" shape."""
+
+    code = serializers.CharField()
+    refund_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal("0"), required=False, allow_null=True
+    )
+
+
+class ReturnCreateSerializer(serializers.Serializer):
+    """Input for ``POST /billing/returns/`` -- every ``entries[].code`` must
+    resolve to a ``SOLD`` unit on the same sale (validated by
+    ``ReturnService.create``, not here)."""
+
+    entries = ReturnEntrySerializer(many=True)
+    reason = serializers.CharField(max_length=255)
+    refund_method = serializers.ChoiceField(choices=Payment.Method.choices)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+    def validate_entries(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one unit is required.")
+        return [dict(entry) for entry in value]
+
+
+class ReturnInspectSerializer(serializers.Serializer):
+    """Input for ``POST /billing/returns/{id}/units/{unit_id}/inspect/``."""
+
+    condition = serializers.ChoiceField(
+        choices=[ReturnUnit.Condition.RESELLABLE, ReturnUnit.Condition.DAMAGED]
+    )

@@ -20,6 +20,7 @@ import {
   StockTransfersPage,
 } from "@/features/inventory";
 import { CategoriesPage, ProductDetailPage, ProductsPage } from "@/features/products";
+import { NewReturnPage, ReturnDetailPage, ReturnsPage } from "@/features/returns";
 import { NewBillPage, OrdersPage } from "@/features/sales";
 import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
 import { DashboardPage } from "./dashboard";
@@ -61,7 +62,6 @@ const scannerFallback = (
 );
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
-  { path: "sales/returns", title: "Returns", phase: "Phase 10" },
   { path: "purchases/suppliers", title: "Suppliers", phase: "Phase 12" },
   { path: "purchases/orders", title: "Purchase Orders", phase: "Phase 12" },
   { path: "purchases/receive", title: "Receive Stock", phase: "Phase 12" },
@@ -103,6 +103,9 @@ export const router = createBrowserRouter([
           { path: "sales/new", element: <NewBillPage /> },
           { path: "sales/invoices", element: <InvoicesPage /> },
           { path: "sales/invoices/:invoiceId", element: <InvoiceDetailPage /> },
+          { path: "sales/returns", element: <ReturnsPage /> },
+          { path: "sales/returns/new", element: <NewReturnPage /> },
+          { path: "sales/returns/:returnId", element: <ReturnDetailPage /> },
           {
             path: "barcode/scan",
             element: (

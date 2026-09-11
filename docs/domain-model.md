@@ -428,6 +428,75 @@ customer/business "place of supply", which doesn't exist until
 RBAC: `billing.view` (reads), `billing.manage` (checkout). Both codenames were
 already reserved in `rbac.py` — no change this phase.
 
+## Returns (`apps/billing`, Phase 10, ADR-015)
+
+HEXAGARE_FEATURES.md §31/§59's flow — scan a sold serial, resolve it to its
+original sale/line, refund, move the unit to `RETURNED`, then inspect it to
+`AVAILABLE` (resellable) or `DAMAGED` — modeled as two new models alongside
+`Payment`/`Invoice` in `apps/billing` (ADR-015), not a new domain app.
+
+- **`Return`** — `sale` FK (`PROTECT`), `reason`, `note`, `created_by`,
+  `created_at`. `refund_total` is a computed property (sum of its
+  `ReturnUnit.refund_amount` rows), not a stored column — `ReturnUnit` rows
+  are immutable once created, same reasoning as `SaleLineUnit`.
+- **`ReturnUnit`** — `return_record` FK (`CASCADE`, related name `units`;
+  named to dodge the `return` keyword), `sale_line_unit` FK (`PROTECT`,
+  resolves exactly which sale/line this unit came back from),
+  `serialized_unit` FK (**not** `OneToOneField` — contrast `SaleLineUnit` — a
+  unit can be sold again after being restored, so it may have more than one
+  `ReturnUnit` row across its lifetime), `refund_amount`, `condition`
+  (`PENDING` → `RESELLABLE`/`DAMAGED`), `inspected_at`, `inspected_by`.
+
+### `apps/billing/services/returns.py:ReturnService`
+
+- **`resolve(code)`** — read-only preview for one scanned code: the unit,
+  its `SaleLineUnit`, the originating `Sale`, and a suggested refund amount
+  (`SaleLine.net_amount / quantity`, an even split — `SaleLine` carries no
+  per-unit discount breakdown). Raises if the unit isn't `SOLD`.
+- **`create(entries, reason, refund_method, note, actor)`** — one atomic
+  call. Every `entries[].code` must resolve to a `SOLD` unit on the **same**
+  `Sale` (rejects a mix); each unit moves `SOLD -> RETURNED` via
+  `SerializedInventoryService.return_unit()` (ledger `RETURN` row, no
+  changes needed to that service), a `ReturnUnit` row is created per unit
+  (refund amount defaults to the suggestion, overridable per unit), and one
+  `Payment` row (`type=REFUND`) is created for the summed total — one
+  refund method per `Return`, not split-tender.
+- **`inspect(return_unit, condition, actor)`** — resolves a still-`PENDING`
+  `ReturnUnit`. `RESELLABLE` calls `SerializedInventoryService.restore()`
+  (`RETURNED -> AVAILABLE`); `DAMAGED` calls `.damage()`
+  (`RETURNED -> DAMAGED`). Rejects a unit already inspected.
+
+**Channel-agnostic by construction.** Resolution goes through
+`SerializedUnit.sale_line_unit`, which every `SOLD` unit has regardless of
+whether it was sold through the offline POS checkout (Phase 8) or the
+Amazon CSV importer (Phase 9) — no channel branch anywhere in this service.
+This is deliberately how Phase 9's gap (a CSV trying to move an
+already-finalized order to `RETURNED`/`REFUNDED` is logged as a failed row
+rather than reversed — ADR-014 point 3) gets closed: an operator processes
+that return here instead, by scanning the serial.
+
+`Sale.status` is **not** written by this flow — a sale can have some units
+returned and others still `SOLD`; return state lives at the
+`Return`/`ReturnUnit` level (`Return.sale` for the reverse lookup).
+
+### API (`/api/v1/billing/returns/`)
+
+- `resolve/` (GET, `returns`) — `?code=` -> unit/sale/line preview.
+- `` (list/retrieve/create, `returns`) — create takes
+  `{"entries": [{"code", "refund_amount"?}], "reason", "refund_method",
+  "note"?}`.
+- `{id}/units/{return_unit_id}/inspect/` (POST, `returns`) —
+  `{"condition": "RESELLABLE" | "DAMAGED"}`.
+
+RBAC: the single `returns` codename (reserved since Phase 1, held by
+Cashier/Manager/Admin, not Warehouse) gates every action — no `rbac.py`
+change.
+
+Frontend: `frontend/src/features/returns/` — `ReturnsPage` (list),
+`NewReturnPage` (scan/type-code flow, reusing `features/sales`'s
+`CameraScanPanel`), `ReturnDetailPage` (per-unit inspect actions) —
+replacing the Phase 0 stub route at `/sales/returns`.
+
 ## Integrations (Amazon)
 
 CSV order import (Phase 9, ADR-014) — lives under `apps.integrations` (a

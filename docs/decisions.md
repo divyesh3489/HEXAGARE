@@ -770,3 +770,76 @@ nested subpackage) find them; migrations stay at the conventional
 `apps/integrations/migrations/`. A future channel gets a sibling subpackage
 (`apps/integrations/flipkart/`, ...), not a new Django app. See
 `docs/amazon-order-import.md` for the full CSV format and idempotency rules.
+
+---
+
+## ADR-015 — Returns: modeled in `apps.billing`, channel-agnostic by
+construction, refund-amount snapshot is an even split
+
+**Status:** Accepted (Phase 10)
+
+**Context.** HEXAGARE_FEATURES.md §31/§59: scan a sold serial, resolve it
+back to its original `Sale`/`SaleLine`, refund, move the unit
+`SOLD → RETURNED`, then a separate inspection step resolves it to
+`AVAILABLE` (resellable) or `DAMAGED`. No domain app named "returns" exists
+in the fixed app list (CLAUDE.md); the flow is fundamentally a refund/
+money-flow action layered on an already-placed sale, the same shape as
+`apps.billing.services.checkout.CompleteSaleService` (which also spans
+`apps.sales` and `apps.products` without becoming a `sales`/`products`
+change).
+
+**Decision.**
+1. **New models `Return`/`ReturnUnit` live in `apps.billing`**, not
+   `apps.sales` or a new app — same reasoning ADR-013 already established
+   for `Payment`/`Invoice`/`CompleteSaleService`. `ReturnUnit.serialized_unit`
+   is a plain `ForeignKey`, not `OneToOneField` (contrast `SaleLineUnit`) —
+   a unit can be sold again after being restored to `AVAILABLE`, so it can
+   legitimately have more than one `ReturnUnit` row over its lifetime.
+2. **Resolution is channel-agnostic by construction, closing Phase 9's
+   gap.** `ReturnService.resolve`/`.create` go through
+   `SerializedUnit.sale_line_unit` (Phase 8's `SaleLineUnit`), which every
+   `SOLD` unit has whether it was sold through the offline POS checkout or
+   the Amazon CSV importer (Phase 9 notes 82/89) — no channel branch
+   anywhere. This is deliberately how "a CSV reporting an already-finalized
+   Amazon order as `RETURNED`/`REFUNDED` is logged as a failed row rather
+   than reversed" (ADR-014 point 3) gets closed: an operator now processes
+   that return manually here, by scanning the serial, regardless of which
+   channel sold it.
+3. **One `Return` = one refund transaction against one `Sale`.**
+   `ReturnService.create` rejects a call whose scanned serials resolve to
+   more than one `Sale` — a return does not span sales. Multiple units from
+   the *same* sale are fine and share one refund `Payment` row
+   (`type=REFUND`, reusing the model exactly as ADR-013 point 8 already
+   reserved it for this phase).
+4. **`ReturnUnit.refund_amount` snapshots an even split of the original
+   line's net amount across its bound units**
+   (`SaleLine.net_amount / SaleLine.quantity`, quantized) — `SaleLine`
+   carries no per-unit discount breakdown, so this is the best available
+   default. The cashier may override the suggested amount per unit before
+   submitting (HEXAGARE_FEATURES.md §31 lists "Refund amount" as its own
+   field, implying it's adjustable, not strictly derived).
+5. **`Sale.status` is deliberately left untouched by a partial unit
+   return.** `Sale.Status.RETURNED`/`REFUNDED` (added in Phase 7 for
+   channel-status vocabulary) are not written by this flow — a `Sale` can
+   have some units returned and others still `SOLD`, so collapsing that
+   into one `Sale.status` value would lose information. Return state lives
+   at the `Return`/`ReturnUnit` level, queryable via `Return.sale`.
+6. **One refund method per `Return`, not split-tender.** Unlike
+   `CompleteSaleService.complete`'s `payments: list[...]`, a return records
+   exactly one `Payment` row for the summed refund — split-tender refunds
+   weren't asked for and would add a second "list of entries" shape for a
+   flow that already has one (the scanned units themselves).
+7. **Inspection is a separate step/model state, not folded into `create`.**
+   `ReturnUnit.condition` starts `PENDING` (the unit is `RETURNED` but not
+   yet inspected) and is set exactly once by `ReturnService.inspect`, which
+   calls the existing `SerializedInventoryService.restore()` (→
+   `AVAILABLE`) or `.damage()` (→ `DAMAGED`) — both already existed and
+   needed no changes; `ALLOWED_TRANSITIONS` already had `SOLD → RETURNED`
+   and `RETURNED → {AVAILABLE, DAMAGED}` before this phase.
+
+**Consequences.** No RBAC change — the single `returns` codename (reserved
+since Phase 1) gates every action (`resolve`/list/retrieve/create/inspect),
+already held by Cashier/Manager/Admin, not Warehouse. No new
+`InventoryTransaction.Kind` — `RETURN`, `DAMAGE`, `RESTORE` already existed.
+Frontend: `frontend/src/features/returns/` (list, scan-based "New Return",
+detail-with-inspect-actions), replacing the Phase 0 stub route.

@@ -182,3 +182,114 @@ class InvoiceDelivery(models.Model):
 
     def __str__(self) -> str:
         return f"{self.channel} delivery for {self.invoice_id} ({self.status})"
+
+
+class Return(models.Model):
+    """One return transaction (Phase 10, ADR-015) -- one or more sold
+    serialized units handed back against a single :class:`~apps.sales.models.Sale`,
+    refunded as one :class:`Payment` row (``type=REFUND``).
+
+    Works identically for a unit sold through the offline POS checkout
+    (:mod:`apps.billing.services.checkout`) or one sold by the Amazon CSV
+    importer (:mod:`apps.integrations.amazon`) -- both leave a
+    :class:`~apps.sales.models.SaleLineUnit` behind, and this model only ever
+    resolves a serial through that join, never branching on channel. This is
+    deliberately how Phase 9's "a CSV reporting an already-finalized order as
+    RETURNED/REFUNDED is logged as a failed row rather than reversed" gap gets
+    closed -- an operator processes it here instead, by scanning the serial.
+
+    Not a per-line-item document like ``Sale``/``Invoice``: :class:`ReturnUnit`
+    rows are the line items, one per returned unit.
+    """
+
+    sale = models.ForeignKey(
+        "sales.Sale",
+        on_delete=models.PROTECT,
+        related_name="returns",
+    )
+    reason = models.CharField(max_length=255)
+    note = models.CharField(max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Return #{self.pk} on sale #{self.sale_id}"
+
+    @property
+    def refund_total(self) -> Decimal:
+        """Sum of every :class:`ReturnUnit.refund_amount` -- matches the
+        single refund :class:`Payment` row created alongside this return.
+        A plain sum, not a cached column: ``ReturnUnit`` rows are immutable
+        once created (same reasoning as ``SaleLineUnit``)."""
+        total = _ZERO
+        for unit in self.units.all():
+            total += unit.refund_amount
+        return total
+
+
+class ReturnUnit(models.Model):
+    """One physical unit handed back as part of a :class:`Return`.
+
+    ``serialized_unit`` is a plain ``ForeignKey``, not a ``OneToOneField``
+    (contrast :class:`~apps.sales.models.SaleLineUnit`) -- a unit can be sold
+    again after being restored to ``AVAILABLE`` and returned again later, so
+    it may legitimately have more than one ``ReturnUnit`` row over its
+    lifetime. ``sale_line_unit`` pins down exactly which sale/line it came
+    back from. ``condition`` starts ``PENDING`` (the unit is ``RETURNED`` but
+    not yet inspected) and is set exactly once, by
+    ``apps.billing.services.returns.ReturnService.inspect``.
+    """
+
+    class Condition(models.TextChoices):
+        PENDING = "PENDING", "Pending inspection"
+        RESELLABLE = "RESELLABLE", "Resellable"
+        DAMAGED = "DAMAGED", "Damaged"
+
+    return_record = models.ForeignKey(
+        Return,
+        on_delete=models.CASCADE,
+        related_name="units",
+    )
+    sale_line_unit = models.ForeignKey(
+        "sales.SaleLineUnit",
+        on_delete=models.PROTECT,
+        related_name="return_units",
+    )
+    serialized_unit = models.ForeignKey(
+        "products.SerializedUnit",
+        on_delete=models.PROTECT,
+        related_name="return_units",
+    )
+    refund_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, validators=[MinValueValidator(_ZERO)]
+    )
+    condition = models.CharField(
+        max_length=12,
+        choices=Condition.choices,
+        default=Condition.PENDING,
+        db_index=True,
+    )
+    inspected_at = models.DateTimeField(null=True, blank=True)
+    inspected_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"{self.serialized_unit_id} on return #{self.return_record_id}"
