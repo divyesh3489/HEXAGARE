@@ -1,0 +1,4 @@
+order_id,order_date,order_status,amazon_sku,quantity,selling_price,gst_amount,referral_fee,closing_fee,fulfillment_fee,shipping_cost,advertising_cost,other_charges,refund_amount
+AMZ-SAMPLE-1001,2026-01-10,Shipped,HEX-MP-11X23-001,2,590.00,90.00,88.50,10.00,30.00,40.00,20.00,5.00,0.00
+AMZ-SAMPLE-1002,2026-01-11,Pending,HEX-DM-BLACK-001,1,1180.00,180.00,,,,,,,0.00
+AMZ-SAMPLE-1003,2026-01-12,Delivered,HEX-KB-RED-001,1,2500.00,381.36,375.00,25.00,60.00,70.00,0.00,0.00,0.00

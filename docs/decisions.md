@@ -691,3 +691,82 @@ corrected flow directly (not as a diff) since this was caught and fixed
 within the same phase, before merge. The original ADR-013 point 1 is
 superseded by this addendum. No schema change beyond the two new `Sale`
 properties — `Payment`/`Invoice`/`SaleLineUnit` are unchanged.
+
+---
+
+## ADR-014 — Amazon order import: bypasses cart/checkout, order-level
+atomicity, configured fees are a fallback
+
+**Status:** Accepted (Phase 9)
+
+**Context.** ADR-013 flagged but deferred this decision: "imported
+historical orders don't need to go through `SaleUnitService`/
+`CompleteSaleService` at all if they arrive already 'sold' (that decision is
+Phase 9's own, not made here)." Phase 9 adds CSV import of Amazon orders
+(`apps/integrations/amazon`), and several shapes needed deciding: how an
+already-happened, already-invoiced-by-Amazon order should touch the local
+sales/inventory model; how a CSV spanning many orders should fail (or not)
+as a unit; and how "Amazon fees must be configurable" (§22) interacts with a
+CSV that may or may not already contain actual fee figures.
+
+**Decision.**
+
+1. **Import bypasses `SaleUnitService` and `CompleteSaleService` entirely.**
+   `AmazonOrderImportService` creates `SaleLine`s directly and, for an order
+   whose status means stock left the business, calls
+   `SerializedInventoryService.reserve()` then `.sell()` directly per unit
+   (both calls still required — the state machine has no direct
+   `AVAILABLE → SOLD` edge) and writes `SaleLineUnit` rows itself. **No
+   `Payment`/`Invoice` is created** — Amazon invoices the customer directly;
+   Hexagare only needs the sale record and the settlement financials.
+2. **Order-level atomicity, not batch-level.** Rows are grouped by
+   `order_id`; each order commits (or rolls back) in its own
+   `transaction.atomic()`. One bad order (unknown SKU, insufficient stock,
+   conflicting statuses across its rows) is recorded in the batch's
+   `error_log` and skipped — it never fails the rest of the file. Within one
+   order it's all-or-nothing; there is no partially-imported order.
+3. **Idempotent re-import, with a finalization rule.** `Sale` is keyed
+   `(sales_channel, external_reference)`, `AmazonOrderSettlement` on `(sale,
+   sku)`. An order that hasn't sold units yet is fully rebuilt on every
+   re-import. Once it has (any bound `SaleLineUnit`), it is **finalized**:
+   re-import only ever advances `Sale.status` forward along the
+   pre-cancellation lifecycle; a CSV trying to move a finalized order to
+   `CANCELLED`/`RETURNED`/`REFUNDED` is **not applied** (logged as a failed
+   order instead) rather than silently mismatching units the importer has no
+   way to reverse. Reversing sold stock is Phase 10 Returns' job.
+4. **`SaleLine` pricing snapshots the CSV's actual values**
+   (`selling_price`/derived `tax_rate`), not `variant.effective_*` — for a
+   historical import, "what was actually charged" is the correct snapshot,
+   which can differ from today's catalog price. This is a deliberate
+   divergence from how a locally-created `Sale` snapshots pricing at
+   add-time (ADR-012); the meaning ("price actually charged, frozen at time
+   of sale") is preserved, only the source differs.
+5. **Fee columns: CSV value wins; blank falls back to `AmazonFeeConfig`.**
+   This is what makes "fees must be configurable because rates change"
+   (§22) load-bearing rather than decorative: if the CSV already has actual
+   fees (a real settlement report), they're used as-is; if a column is
+   blank (a simpler order export), the importer computes it from the active
+   config matching product → category → channel-wide, narrowed to the
+   order's date. Nothing configured ever overrides real data.
+6. **`AmazonFeeConfig` includes an `applicable_channel` (`sales_channel`)
+   FK**, even though only the `AMAZON` channel exists today — matching
+   §22's field list literally, so a second marketplace integration (a
+   Flipkart/Meesho adapter reusing the same fee-config shape) needs no
+   migration, just new rows.
+7. **Amazon-specific per-line financials live on `AmazonOrderSettlement`,
+   never on `Sale`/`SaleLine`** — the same channel-specific-data pattern
+   `docs/architecture.md` already establishes, applied for real for the
+   first time. `settlement_amount`/`net_revenue`/`product_cost`/`net_profit`
+   are computed properties matching HEXAGARE_FEATURES.md §21's worked
+   example, not stored columns.
+
+**Consequences.** `apps.integrations` stays a single Django app with an
+`amazon` subpackage (`apps/integrations/amazon/{models,sources,services,
+tasks,serializers,views,urls,admin}.py`) rather than becoming its own app —
+thin re-export shims at `apps/integrations/{models,admin,tasks}.py` exist
+only so Django's app registry / `admin.autodiscover()` /
+`celery.autodiscover_tasks()` (which all look for `<app>.<module>`, not a
+nested subpackage) find them; migrations stay at the conventional
+`apps/integrations/migrations/`. A future channel gets a sibling subpackage
+(`apps/integrations/flipkart/`, ...), not a new Django app. See
+`docs/amazon-order-import.md` for the full CSV format and idempotency rules.

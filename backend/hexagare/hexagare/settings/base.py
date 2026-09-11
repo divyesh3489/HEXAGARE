@@ -220,6 +220,9 @@ SPECTACULAR_SETTINGS = {
         "PaymentTypeEnum": "apps.billing.models.Payment.Type",
         "InvoiceDeliveryChannelEnum": "apps.billing.models.InvoiceDelivery.Channel",
         "InvoiceDeliveryStatusEnum": "apps.billing.models.InvoiceDelivery.Status",
+        "AmazonFeeConfigFeeTypeEnum": "apps.integrations.amazon.models.AmazonFeeConfig.FeeType",
+        "AmazonFeeConfigFeeNameEnum": "apps.integrations.amazon.models.AmazonFeeConfig.FeeName",
+        "AmazonImportBatchStatusEnum": "apps.integrations.amazon.models.AmazonImportBatch.Status",
     },
 }
 
