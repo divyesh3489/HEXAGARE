@@ -56,9 +56,10 @@ class SeedDemoDataTests(TestCase):
         large = ProductVariant.objects.get(sku="HEX-MP-12X32-001")
         self.assertEqual(large.selling_price, Decimal("1770.00"))
 
-        # A few serialized units, each with an opening event.
-        self.assertEqual(SerializedUnit.objects.count(), 7)
-        self.assertEqual(variant.serialized_units.count(), 3)
+        # A few serialized units, each with an opening event -- plus 15 more
+        # received against the demo purchase order (Phase 12).
+        self.assertEqual(SerializedUnit.objects.count(), 22)
+        self.assertEqual(variant.serialized_units.count(), 3 + 15)
         unit = variant.serialized_units.order_by("sequence").first()
         self.assertEqual(unit.serial_number, "HX11X23-000001")
         self.assertEqual(unit.events.count(), 1)
@@ -72,7 +73,7 @@ class SeedDemoDataTests(TestCase):
         self.assertEqual(ProductVariant.objects.count(), 6)
         self.assertEqual(ProductAttributeValue.objects.count(), 6)
         # Units are not regenerated on a second run (serials are never reused).
-        self.assertEqual(SerializedUnit.objects.count(), 7)
+        self.assertEqual(SerializedUnit.objects.count(), 22)
         # No duplicate group memberships.
         admin = User.objects.get(email="admin@hexagare.test")
         self.assertEqual(admin.groups.filter(name="Admin").count(), 1)

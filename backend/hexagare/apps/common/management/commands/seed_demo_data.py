@@ -32,8 +32,11 @@ from apps.products.models import (
     ProductVariant,
 )
 from apps.products.services.serial_numbers import create_unit
+from apps.purchases.models import PurchaseOrder, PurchaseOrderLine
+from apps.purchases.services import PurchaseTotalsService, ReceiveStockService
 from apps.sales.models import Sale, SaleLine, SalesChannel
 from apps.sales.services.totals import SalesTotalsService
+from apps.suppliers.models import Supplier
 
 User = get_user_model()
 
@@ -249,6 +252,7 @@ class Command(BaseCommand):
         customers = self._seed_customers()
         sales = self._seed_sales()
         amazon = self._seed_amazon_integration()
+        purchases = self._seed_suppliers_and_purchases()
 
         self.stdout.write(self.style.SUCCESS("Demo data ready:"))
         rows = [
@@ -262,6 +266,7 @@ class Command(BaseCommand):
             ("customers", customers),
             ("sales", sales),
             ("amazon integration", amazon),
+            ("suppliers/purchases", purchases),
         ]
         for label, counts in rows:
             self.stdout.write(
@@ -477,4 +482,49 @@ class Command(BaseCommand):
                 },
             )
             result["created" if created else "existing"] += 1
+        return result
+
+    # -- suppliers / purchases (Phase 12) --------------------------------
+    def _seed_suppliers_and_purchases(self) -> dict:
+        """One demo supplier and a partially-received purchase order, so the
+        Purchases pages have something to show out of the box."""
+        result = {"created": 0, "existing": 0}
+
+        supplier, created = Supplier.objects.get_or_create(
+            name="BrightPack Traders",
+            defaults={
+                "company": "BrightPack Traders Pvt Ltd",
+                "phone": "+91-90000-11111",
+                "email": "sales@brightpack.example",
+                "gstin": "27AAAAA0000A1Z5",
+                "payment_terms": "Net 30",
+            },
+        )
+        result["created" if created else "existing"] += 1
+
+        variant = ProductVariant.objects.filter(sku="HEX-MP-11X23-001").first()
+        warehouse = Location.objects.filter(code="warehouse").first()
+        if variant is None or warehouse is None:
+            return result
+
+        order, order_created = PurchaseOrder.objects.get_or_create(
+            supplier=supplier,
+            reference="PO-DEMO-0001",
+            defaults={"status": PurchaseOrder.Status.DRAFT},
+        )
+        result["created" if order_created else "existing"] += 1
+        if order_created:
+            line = PurchaseOrderLine.objects.create(
+                purchase_order=order,
+                variant=variant,
+                quantity_ordered=20,
+                unit_price=Decimal("450.00"),
+                tax_rate=variant.effective_tax_rate,
+            )
+            PurchaseTotalsService.recalculate(order)
+            order.status = PurchaseOrder.Status.ORDERED
+            order.save(update_fields=["status", "updated_at"])
+            ReceiveStockService.receive(
+                order, receipts=[{"line": line, "quantity": 15, "location": warehouse}]
+            )
         return result

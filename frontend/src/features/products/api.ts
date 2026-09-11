@@ -71,6 +71,11 @@ export const variantsApi = {
     api.get<Paginated<ProductVariant>>(
       `${BASE}/variants/${qs({ search, available: 1, page_size: 10 })}`,
     ),
+  /** Free-text search over every variant regardless of active status --
+   * used by Purchase Order line entry, where restocking a not-yet-active
+   * or discontinued variant is still valid. */
+  searchAll: (search: string) =>
+    api.get<Paginated<ProductVariant>>(`${BASE}/variants/${qs({ search, page_size: 10 })}`),
   create: (body: Partial<ProductVariant>) =>
     api.post<ProductVariant>(`${BASE}/variants/`, body),
   update: (id: number, body: Partial<ProductVariant>) =>

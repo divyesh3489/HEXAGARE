@@ -210,7 +210,76 @@ follow-up work).
 
 ## Current Phase
 
-**Status:** Phase 11 done — Customers (ADR-016, `HEXAGARE_FEATURES.md` §29, §30). New
+**Status:** Phase 12 done — Purchases + Suppliers (ADR-017, `HEXAGARE_FEATURES.md` §32, §33). New
+**`Supplier`** model in `apps/suppliers` (real implementation replacing the scaffold) — `name`
+(required), `company`/`phone`/`email`/`address`/`gstin`/`payment_terms`/`notes` all optional. New
+**`apps/purchases`**: `PurchaseOrder` (`supplier` FK `PROTECT`, `status`
+`DRAFT→ORDERED→PARTIALLY_RECEIVED→RECEIVED`, `CANCELLED` reachable from the first three,
+`reference`/`invoice_number`/`note`, `subtotal`/`discount_total`/`tax_total`/`grand_total` derived
+— written only by **`PurchaseTotalsService.recalculate`**, same shape as `SalesTotalsService`;
+`amount_paid`/`balance_due` computed from `PurchaseOrderPayment` rows), `PurchaseOrderLine`
+(`variant` FK `PROTECT`, `quantity_ordered`/`quantity_received`, `unit_price`/`tax_rate` always
+client-supplied — not snapshotted from the catalog, since a purchase price is what the supplier
+quoted — `discount_amount`), `PurchaseOrderLineUnit` (`line` FK `PROTECT` + `serialized_unit`
+`OneToOne` `PROTECT`, links a received unit back to its PO line for cost-basis traceability,
+mirrors `SaleLineUnit`), `PurchaseOrderPayment` (a standalone model, **not** a reuse of
+`billing.Payment` — that model's `sale` FK is hard-required; reuses the same method/type
+vocabulary). **`ReceiveStockService.receive`** (`apps/purchases/services.py`) is the only path
+that creates units for a PO — one atomic call per receiving session (`{line, quantity, location}`
+entries, validated against `quantity_pending` up front, all-or-nothing), each unit created via the
+same `SerializedInventoryService.generate` allocator every other unit-creation path uses, landing
+directly `AVAILABLE` with `purchase_cost` set from the line's `unit_price` (§33: "Assign Location →
+Mark Units Available"), updating `PurchaseOrder.status` to `PARTIALLY_RECEIVED`/`RECEIVED`. New
+RBAC codename **`purchases.manage`** added (ADR-017 — the three codenames reserved since Phase 1
+covered view/receive/supplier-manage but nothing covered creating or editing a PO itself; falls out
+to Admin/Manager automatically via the existing `_ALL - {...}` role formula, Warehouse keeps only
+`purchases.view`/`purchases_receiving`, Cashier holds none of the purchases codenames). API:
+**`/api/v1/suppliers/`** (standard CRUD, reads `purchases.view`, writes `suppliers.manage`, delete
+blocked while the supplier has purchase-order history) and **`/api/v1/purchases/orders/`**
+(list/retrieve `purchases.view`; create with a nested `lines` convenience list `purchases.manage`;
+`lines/`/`lines/{id}/` add/edit/remove only while `DRAFT`; `place/` `DRAFT→ORDERED`; `receive/`
+`purchases_receiving`; `payments/` record a payment/refund; `cancel/` from
+`DRAFT`/`ORDERED`/`PARTIALLY_RECEIVED`, does not reverse already-received units — all
+`purchases.manage` except `receive/`). Frontend: new `frontend/src/features/suppliers/`
+(`SuppliersPage` list + inline create, `SupplierDetailPage` profile/aggregates/order-history —
+structurally identical to Phase 11 Customers) and `frontend/src/features/purchases/`
+(`PurchaseOrdersPage` list, `NewPurchaseOrderPage` build-a-line-list-then-submit form with unit
+price/tax rate pre-filled from the variant's `effective_purchase_price`/`effective_tax_rate`,
+`PurchaseOrderDetailPage` with place/receive-link/cancel/record-payment actions, `ReceiveStockPage`
+— sourced from a purchase order's own pending lines, unlike Phase 5's bulk-generate wizard which
+is sourced from one manually-chosen variant and quantity) — replacing the three Phase 0 stub
+routes at `/purchases/suppliers`, `/purchases/orders`, `/purchases/receive` (nav entries already
+existed, gated on `purchases.view`/`purchases_receiving`, unchanged). `seed_demo_data` gains one
+demo `Supplier` + one partially-received `PurchaseOrder` (20 ordered, 15 received). Verified:
+`ruff check` + full `manage.py test` (325 tests, 22 new) clean; `eslint` + `tsc -b && vite build`
+clean; a full Chrome pass via the Claude-in-Chrome MCP on the live dev server — created a supplier,
+created a PO with a line (unit price/tax rate auto-filled), placed it, recorded a partial payment
+(balance due updated correctly), hit a real bug attempting to receive stock (below), then completed
+a full create→place→receive→verify cycle on a clean variant: units created `AVAILABLE` at the
+chosen location with `purchase_cost` set from the line's `unit_price`, `PurchaseOrderLineUnit`
+links confirmed via the Django shell, status auto-flipped to `RECEIVED`, and the supplier detail
+aggregates plus the orders list both reflected the change correctly. No console errors.
+
+**Bug caught live (not fixed — pre-existing, outside this phase's scope):** receiving stock
+against `HEX-MP-12X32-001` (variant id 14, `code='12X32'`) failed with a 500 —
+`IntegrityError: duplicate key value violates unique constraint
+"products_serializedunit_serial_number_key"` — because a *different* variant
+(`HEX-DM-BLACK-001`, id 15, `code` now `'BLACK'`) already owned a unit serialed
+`HX12X32-000003`, evidently generated back when that variant's `code` was still `'12X32'`
+(`code` was edited afterward in earlier interactive testing; serial numbers are immutable once
+issued per `docs/serialized-units.md`, so the old serial persists). `allocate_serial`'s uniqueness
+guarantee (`apps/products/services/serial_numbers.py`) is a per-variant sequence counter, not a
+globally-unique formatted string — two variants whose token collides (via a `code` edit after
+serials were already issued under the old value) can produce the same `serial_number`, and
+`create_unit` doesn't catch/retry on the resulting `IntegrityError`, so it surfaces as a 500
+instead of a clean validation error. This is a Phase 3 design gap plus historical dev-data drift,
+not something Phase 12 introduced or a defect in `ReceiveStockService` — every attempt rolled back
+atomically and left the order/lines/payments fully consistent (confirmed via the Django shell
+across several retries), so no data corruption resulted. Left for a future session: either make
+the token derivation collision-proof (e.g. include the variant id) or have `create_unit`
+retry-on-`IntegrityError` with the next sequence.
+
+Previously: Phase 11 — Customers (ADR-016, `HEXAGARE_FEATURES.md` §29, §30). New
 **`Customer`** model in `apps/customers` (real implementation replacing the scaffold) — `name`
 (required), `phone`/`email`/`address`/`gstin`/`notes` (all optional regardless of type), `type`
 (`REGISTERED`/`WALK_IN`, default `REGISTERED`) — one model for both a registered customer and a
@@ -333,9 +402,77 @@ server — uploaded a 2-row demo CSV (one importable, one bad-SKU row), watched 
 PENDING→PARTIAL with the bad row surfaced in `error_log`; created/activated/deleted a SKU mapping;
 created a category-scoped fixed-amount fee rule and confirmed it listed correctly.
 
-**Next up:** Phase 12 — Purchases + Suppliers (see `HEXAGARE_BUILD_PROMPTS.md`).
-**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11.
-**Notes / deviations from the plan:** Phase 11: (100) **`Sale.customer` is `on_delete=PROTECT`,
+**Next up:** Phase 13 — Expenses + Profit/Finance (see `HEXAGARE_BUILD_PROMPTS.md`).
+**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12.
+**Notes / deviations from the plan:** Phase 12: (107) **New RBAC codename `purchases.manage`**
+added (ADR-017) — the three codenames reserved since Phase 1 (`purchases.view`,
+`purchases_receiving`, `suppliers.manage`) left a gap: nothing gated creating or editing a
+purchase order itself, unlike every other domain's `.view`/`.manage` pair. User-confirmed decision
+before implementation (see the Phase 12 planning exchange); falls out to Admin/Manager
+automatically via the existing `_ALL - {"users.manage", "settings.manage"}` formula, no other
+role-table edit needed. (108) **`PurchaseOrder` has a `DRAFT` status mirroring `Sale.is_editable`
+exactly** (also a user-confirmed decision) — lines are freely editable only while `DRAFT`; a
+`place/` action (`DRAFT→ORDERED`) locks them, matching `SaleLine`'s ADR-012 shape rather than the
+simpler "starts at ORDERED" alternative considered in planning. (109) **`PurchaseOrderPayment` is
+a standalone model in `apps.purchases`, not a reuse of `apps.billing.Payment`** (also user-
+confirmed) — `billing.Payment.sale` is a hard-required `PROTECT` FK to `Sale`; extending it to
+also cover purchase orders would touch a tested, unrelated app's core model for no shared benefit,
+and `apps.purchases` has no reason to depend on `apps.billing`. Reuses the same method/type
+vocabulary (Cash/UPI/Card/Bank transfer/Credit; Payment/Refund) as an independently-owned model.
+(110) **`PurchaseOrderLineUnit` lives in `apps.purchases`, not as a FK on `SerializedUnit`** —
+mirrors `apps.sales.models.SaleLineUnit`'s placement, keeping the cross-app reference
+one-directional (`apps.products` never imports `apps.purchases`); `SerializedUnit.purchase_cost`
+(added in Phase 4, unused until now) is the field `ReceiveStockService` actually writes for
+cost-basis, the link row is purely for "which PO did this unit come from" traceability. (111)
+**API mounted at two new top-level prefixes, `/api/v1/suppliers/` and `/api/v1/purchases/`**
+(not `/api/v1/purchases/suppliers/` nested under one prefix) — one `include()` per app, matching
+the "one include() per domain app" convention in `hexagare/urls.py`'s header comment; the nested
+`/purchases/suppliers` URL only exists as a **frontend** route (`nav.ts` already used that path).
+(112) **`ReceiveStockService.receive` validates every `{line, quantity, location}` entry's
+`quantity` against `line.quantity_pending` up front**, before generating any unit — a bad entry in
+a multi-line receiving call fails the whole request atomically rather than partially receiving
+some lines and not others. (113) **A cancelled `PurchaseOrder` never reverses units already
+received** — same non-reversal stance `Sale.cancel` takes toward already-`SOLD` units (only
+`RESERVED` ones get released); `CANCELLED` is reachable from `DRAFT`/`ORDERED`/
+`PARTIALLY_RECEIVED`, marking no more receiving/editing will happen, not undoing what already did.
+(114) **A real bug was caught live via the Claude-in-Chrome MCP** during Chrome verification (see
+the Status section above for the full writeup) — receiving stock against a variant whose `code`
+field had been edited after serials were already issued under the old value produced a
+cross-variant `serial_number` collision (a Phase 3 design gap: `allocate_serial`'s per-variant
+sequence counter doesn't guarantee the *formatted string* is globally unique, and `create_unit`
+doesn't catch/retry the resulting `IntegrityError`), surfacing as a 500 instead of a clean
+validation error. **Not fixed this phase** — it's Phase 3 code, and every attempt rolled back
+atomically with no data corruption (confirmed via the Django shell); noted for a future session
+rather than expanding this phase's scope into `apps.products`. (115) 303→325 backend tests (22
+new: `apps/suppliers/tests/test_api.py` covering CRUD/search/RBAC/delete-guard/aggregates,
+`apps/purchases/tests/test_api.py` covering create-with-nested-lines/line-lock-after-place/
+place-requires-a-line/receive-stock partial-then-full/receive-more-than-pending-rejected/
+cannot-receive-a-draft-order/payment-and-balance-due/cancel-from-ordered/cancel-from-received-
+rejected/RBAC including a directly-granted-permission test for the `purchases.manage` vs.
+`purchases_receiving` split, since every seed role holding one also holds the other). `ruff check`
+clean; `python manage.py spectacular --fail-on-warn` needed one new `ENUM_NAME_OVERRIDES` entry
+(`PurchaseOrderStatusEnum`) — `PurchaseOrderPayment.method`/`.type` deliberately did **not** get
+new override entries — they resolve to the existing `PaymentMethodEnum`/`PaymentTypeEnum` names
+from `apps.billing.Payment` by virtue of an identical `(value, label)` set, same reasoning as
+`Invoice.status`/`LabelBatchStatusEnum` (Phase 8 note 69) — this was caught manually
+(`--fail-on-warn` isn't part of `make lint`/CI, same as every prior phase). (116) `seed_demo_data` gains a new `_seed_suppliers_and_purchases` step —
+one demo `Supplier` ("BrightPack Traders") and one `PurchaseOrder` against `HEX-MP-11X23-001`
+(20 ordered, 15 received via a real `ReceiveStockService.receive` call, left `PARTIALLY_RECEIVED`
+on purpose so the Purchases pages have both an in-progress and, after this phase's live Chrome
+verification, a fully-`RECEIVED` order to look at). This pushed `SerializedUnit.objects.count()`
+from 7 to 22 in the dev/demo database — `apps/common/tests/test_seed_demo_data.py`'s two hardcoded
+counts (`test_creates_demo_users_and_catalog`, `test_is_idempotent`) were updated to match, same
+as every phase that adds to the seed data. (117) Chrome DevTools MCP not connected — verified live
+via the Claude-in-Chrome MCP: created a supplier, created a PO with a line (unit price/tax rate
+correctly pre-filled from `effective_purchase_price`/`effective_tax_rate`), placed it, recorded a
+partial payment (balance due recalculated correctly), hit the bug in note 114 on a
+pre-existing-data variant, then completed a full create→place→receive→verify cycle on a clean
+variant with no pre-existing data pollution — units landed `AVAILABLE` at the chosen location with
+`purchase_cost` set correctly, `PurchaseOrderLineUnit` rows confirmed via the Django shell, PO
+status auto-flipped to `RECEIVED`, and both the supplier detail page's aggregates and the Purchase
+Orders list reflected everything correctly with no console errors.
+
+Phase 11: (100) **`Sale.customer` is `on_delete=PROTECT`,
 not `SET_NULL`** — deleting a customer with sales history is blocked at the API level
 (`CustomerViewSet.perform_destroy` raises a friendly `ValidationError` before the FK constraint
 would ever fire), same guard style as `inventory.Location` (Phase 4 note 40) rather than silently
