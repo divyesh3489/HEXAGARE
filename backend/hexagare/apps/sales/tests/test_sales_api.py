@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import OperationalPermission
 from apps.accounts.rbac import ensure_role_groups
+from apps.customers.models import Customer
 from apps.products.models import Category, Product, ProductVariant
 from apps.sales.models import Sale, SaleLine, SalesChannel
 
@@ -200,3 +201,46 @@ class CancelTests(SalesApiTestBase):
         sale = Sale.objects.create(sales_channel=self.offline, status=Sale.Status.COMPLETED)
         res = self.client_for(self.cashier).post(f"/api/v1/sales/{sale.pk}/cancel/")
         self.assertEqual(res.status_code, 400)
+
+
+class CustomerAttachTests(SalesApiTestBase):
+    def setUp(self):
+        self.sale = Sale.objects.create(sales_channel=self.offline)
+        self.customer = Customer.objects.create(name="Rahul Sharma", type=Customer.Type.REGISTERED)
+
+    def test_attach_customer(self):
+        res = self.client_for(self.cashier).post(
+            f"/api/v1/sales/{self.sale.pk}/customer/",
+            {"customer": self.customer.pk},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["customer"], self.customer.pk)
+        self.assertEqual(res.data["customer_name"], "Rahul Sharma")
+
+    def test_clear_customer(self):
+        self.sale.customer = self.customer
+        self.sale.save(update_fields=["customer"])
+        res = self.client_for(self.cashier).post(
+            f"/api/v1/sales/{self.sale.pk}/customer/", {"customer": None}, format="json"
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIsNone(res.data["customer"])
+        self.assertIsNone(res.data["customer_name"])
+
+    def test_create_with_customer(self):
+        res = self.client_for(self.cashier).post(
+            "/api/v1/sales/",
+            {"sales_channel": self.offline.pk, "customer": self.customer.pk},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["customer"], self.customer.pk)
+
+    def test_attaching_customer_requires_orders_manage(self):
+        res = self.client_for(self.viewer).post(
+            f"/api/v1/sales/{self.sale.pk}/customer/",
+            {"customer": self.customer.pk},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 403)

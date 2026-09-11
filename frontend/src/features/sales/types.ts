@@ -45,6 +45,8 @@ export interface SaleListItem {
   sales_channel: number;
   sales_channel_code: string;
   sales_channel_name: string;
+  customer: number | null;
+  customer_name: string | null;
   status: SaleStatus;
   external_reference: string | null;
   line_count: number;

@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from apps.accounts.rbac import ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_WAREHOUSE
+from apps.customers.models import Customer
 from apps.integrations.amazon.models import AmazonFeeConfig, AmazonSkuMapping
 from apps.inventory.models import Location, StockLevelPolicy
 from apps.inventory.services.ledger import InventoryService
@@ -174,6 +175,22 @@ DEMO_STOCK_POLICIES = [
     ("HEX-DM-BLACK-001", "amazon", 1, 10),
 ]
 
+# One registered, one walk-in -- shows both Customer.type values in the list.
+DEMO_CUSTOMERS = [
+    {
+        "name": "Rahul Sharma",
+        "phone": "+91-98765-43210",
+        "email": "rahul.sharma@example.com",
+        "type": Customer.Type.REGISTERED,
+    },
+    {
+        "name": "Walk-in — Counter",
+        "phone": "",
+        "email": "",
+        "type": Customer.Type.WALK_IN,
+    },
+]
+
 # A couple of demo orders so the Orders list isn't empty in dev. Matched on
 # (channel, external_reference, note) -- unique enough for this fixed set.
 DEMO_SALES = [
@@ -183,6 +200,7 @@ DEMO_SALES = [
         "note": "Demo walk-in counter sale",
         "status": Sale.Status.COMPLETED,
         "lines": [("HEX-MP-11X23-001", 1)],
+        "customer_name": "Rahul Sharma",
     },
     {
         "channel": "AMAZON",
@@ -190,6 +208,7 @@ DEMO_SALES = [
         "note": "",
         "status": Sale.Status.SHIPPED,
         "lines": [("HEX-DM-BLACK-001", 2)],
+        "customer_name": None,
     },
 ]
 
@@ -227,6 +246,7 @@ class Command(BaseCommand):
         # The opening ledger rows are written as each unit is created; this only
         # matters if units pre-date the Phase 4 migration on an existing DB.
         InventoryService.rebuild_balances()
+        customers = self._seed_customers()
         sales = self._seed_sales()
         amazon = self._seed_amazon_integration()
 
@@ -239,6 +259,7 @@ class Command(BaseCommand):
             ("variants", variants),
             ("units", units),
             ("stock policies", policies),
+            ("customers", customers),
             ("sales", sales),
             ("amazon integration", amazon),
         ]
@@ -378,6 +399,21 @@ class Command(BaseCommand):
             result["created" if created else "existing"] += 1
         return result
 
+    # -- customers -------------------------------------------------------
+    def _seed_customers(self) -> dict:
+        result = {"created": 0, "existing": 0}
+        for spec in DEMO_CUSTOMERS:
+            _, created = Customer.objects.get_or_create(
+                name=spec["name"],
+                defaults={
+                    "phone": spec["phone"],
+                    "email": spec["email"],
+                    "type": spec["type"],
+                },
+            )
+            result["created" if created else "existing"] += 1
+        return result
+
     # -- sales / orders ------------------------------------------------
     def _seed_sales(self) -> dict:
         """A couple of demo orders across both channels, one per DEMO_SALES
@@ -387,11 +423,14 @@ class Command(BaseCommand):
             channel = SalesChannel.objects.filter(code=spec["channel"]).first()
             if channel is None:
                 continue
+            customer = None
+            if spec.get("customer_name"):
+                customer = Customer.objects.filter(name=spec["customer_name"]).first()
             sale, created = Sale.objects.get_or_create(
                 sales_channel=channel,
                 external_reference=spec["external_reference"],
                 note=spec["note"],
-                defaults={"status": spec["status"]},
+                defaults={"status": spec["status"], "customer": customer},
             )
             if not created:
                 result["existing"] += 1

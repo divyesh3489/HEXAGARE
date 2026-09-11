@@ -13,6 +13,7 @@ from decimal import Decimal
 from django.db import transaction
 from rest_framework import serializers
 
+from apps.customers.models import Customer
 from apps.products.models import Product, ProductVariant
 
 from .models import Sale, SaleLine, SalesChannel
@@ -59,6 +60,7 @@ class SaleListSerializer(serializers.ModelSerializer):
 
     sales_channel_code = serializers.CharField(source="sales_channel.code", read_only=True)
     sales_channel_name = serializers.CharField(source="sales_channel.name", read_only=True)
+    customer_name = serializers.SerializerMethodField()
     line_count = serializers.IntegerField(source="lines.count", read_only=True)
     amount_paid = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     balance_due = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
@@ -70,6 +72,8 @@ class SaleListSerializer(serializers.ModelSerializer):
             "sales_channel",
             "sales_channel_code",
             "sales_channel_name",
+            "customer",
+            "customer_name",
             "status",
             "external_reference",
             "line_count",
@@ -82,6 +86,9 @@ class SaleListSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_customer_name(self, obj: Sale) -> str | None:
+        return obj.customer.name if obj.customer_id else None
 
 
 class SaleDetailSerializer(SaleListSerializer):
@@ -163,11 +170,14 @@ class SaleCreateSerializer(serializers.ModelSerializer):
     same way as the ``lines`` action."""
 
     external_reference = serializers.CharField(required=False, allow_blank=True, max_length=64)
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=Customer.objects.all(), required=False, allow_null=True
+    )
     lines = serializers.ListField(child=serializers.DictField(), required=False, write_only=True)
 
     class Meta:
         model = Sale
-        fields = ["sales_channel", "external_reference", "note", "lines"]
+        fields = ["sales_channel", "customer", "external_reference", "note", "lines"]
         # DRF's auto-generated UniqueTogetherValidator (from the model's
         # conditional UniqueConstraint) would require external_reference on
         # every create, even though it's optional -- validate() below does
@@ -221,3 +231,13 @@ class SaleUnitAddSerializer(serializers.Serializer):
         if bool(attrs.get("code")) == bool(attrs.get("variant")):
             raise serializers.ValidationError("Provide exactly one of `code` or `variant`.")
         return attrs
+
+
+class SaleCustomerSerializer(serializers.Serializer):
+    """Input for ``POST /sales/{id}/customer/`` -- attach, change, or clear
+    (``customer: null``) the customer on a sale. Not tied to cart
+    editability: linking a customer is metadata, not a line/total change."""
+
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=Customer.objects.all(), required=False, allow_null=True
+    )

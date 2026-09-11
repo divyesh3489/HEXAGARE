@@ -224,6 +224,7 @@ SPECTACULAR_SETTINGS = {
         "AmazonFeeConfigFeeNameEnum": "apps.integrations.amazon.models.AmazonFeeConfig.FeeName",
         "AmazonImportBatchStatusEnum": "apps.integrations.amazon.models.AmazonImportBatch.Status",
         "ReturnUnitConditionEnum": "apps.billing.models.ReturnUnit.Condition",
+        "CustomerTypeEnum": "apps.customers.models.Customer.Type",
     },
 }
 

@@ -34,6 +34,9 @@ export const salesApi = {
   /** Remove a whole cart line -- releases every unit bound to it. */
   removeLine: (saleId: number, lineId: number) =>
     api.delete<Sale>(`${BASE}/${saleId}/lines/${lineId}/`),
+  /** Attach, change, or clear (`customer: null`) the customer on a sale. */
+  setCustomer: (saleId: number, customer: number | null) =>
+    api.post<Sale>(`${BASE}/${saleId}/customer/`, { customer }),
   cancel: (saleId: number) => api.post<Sale>(`${BASE}/${saleId}/cancel/`),
 };
 

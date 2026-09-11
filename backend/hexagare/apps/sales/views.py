@@ -8,6 +8,7 @@
 - ``sales/{id}/lines/{line_id}/``    DELETE remove the line
 - ``sales/{id}/units/``              POST   scan/search-add one exact unit (Phase 8)
 - ``sales/{id}/units/{unit_id}/``    DELETE release/unbind one exact unit (Phase 8)
+- ``sales/{id}/customer/``           POST   attach/change/clear the customer (Phase 11)
 - ``sales/{id}/cancel/``             POST   cancel the sale (releases any bound units)
 """
 
@@ -25,6 +26,7 @@ from apps.accounts.permissions import require
 from .models import Sale, SaleLine, SalesChannel
 from .serializers import (
     SaleCreateSerializer,
+    SaleCustomerSerializer,
     SaleDetailSerializer,
     SaleLineUpdateSerializer,
     SaleLineWriteSerializer,
@@ -159,6 +161,16 @@ class SaleViewSet(
     def remove_unit(self, request, pk=None, unit_id=None):
         sale = self._editable_sale(pk)
         SaleUnitService.remove(sale, unit_id, actor=request.user)
+        return self._detail_response(sale)
+
+    @extend_schema(request=SaleCustomerSerializer, responses=SaleDetailSerializer)
+    @action(detail=True, methods=["post"], url_path="customer")
+    def set_customer(self, request, pk=None):
+        sale = self.get_object()
+        serializer = SaleCustomerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        sale.customer = serializer.validated_data.get("customer")
+        sale.save(update_fields=["customer", "updated_at"])
         return self._detail_response(sale)
 
     @action(detail=True, methods=["post"])

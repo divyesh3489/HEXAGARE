@@ -843,3 +843,63 @@ already held by Cashier/Manager/Admin, not Warehouse. No new
 `InventoryTransaction.Kind` — `RETURN`, `DAMAGE`, `RESTORE` already existed.
 Frontend: `frontend/src/features/returns/` (list, scan-based "New Return",
 detail-with-inspect-actions), replacing the Phase 0 stub route.
+
+## ADR-016 — Customers: one model for registered + walk-in, `Sale.customer`
+nullable and `PROTECT`, purchase history computed on read
+
+**Status:** Accepted (Phase 11)
+
+**Context.** HEXAGARE_FEATURES.md §29/§30: customers need a profile (name,
+phone, email, address, GSTIN, notes), a purchase/refund/outstanding summary,
+and a serial-number history; walk-in sales must work with "no registration
+required" at all, while the POS should also support a lightweight walk-in
+record (name/phone) added inline without leaving the New Bill screen.
+
+**Decision.**
+1. **One `Customer` model for both registered and walk-in**, distinguished
+   only by a `type` field (`REGISTERED`/`WALK_IN`). Every field besides
+   `name` is optional regardless of type — a walk-in quick-added from POS
+   with just a name/phone can be "upgraded" to a full registered profile
+   later by editing the same row, never a migration to a different model.
+2. **`Sale.customer` is a nullable, `PROTECT` string FK to
+   `customers.Customer`.** `null` is the true "no registration required"
+   walk-in (§30) — no `Customer` row is created at all. This is distinct
+   from a `Customer` row with `type=WALK_IN`, which is a deliberate choice
+   to keep a name/phone on record (for support/returns) without full
+   registration. `PROTECT` mirrors the guard already used for
+   `inventory.Location` (Phase 4 note 40) and `sales.SalesChannel` — a
+   customer with sales history cannot be deleted, surfaced as a friendly
+   `validation_error`, not a 500; the `apps.customers` API blocks deletion
+   the same way before the FK constraint would ever fire.
+3. **Attaching/changing/clearing the customer on a sale is its own action**
+   (`POST /sales/{id}/customer/`), not a field on the generic `Sale` update
+   path — `SaleViewSet` deliberately has no `UpdateModelMixin` (ADR-012)
+   and every other sale mutation already goes through a dedicated action
+   (`lines/`, `units/`, `cancel/`). Unlike cart edits, this action is not
+   gated on `sale.is_editable` — linking a customer is metadata, not a
+   line/total change, so it works on a `RESERVED` (on-hold) or even
+   `COMPLETED` sale too.
+4. **Purchase-history aggregates (`total_purchases`, `total_refunds`,
+   `outstanding_amount`, `serial_numbers`) are computed on read in
+   `apps.customers.services`, not cached columns** — same reasoning as
+   `Sale.amount_paid` / `Return.refund_total`. `apps.customers` reads
+   `apps.sales`/`apps.billing`/`apps.products` models directly (one
+   directional: neither of those apps imports `apps.customers` back, only
+   the string FK on `Sale.customer` points at it), matching this project's
+   scale (dozens/hundreds of orders per customer, not thousands) rather
+   than adding a separate paginated per-section endpoint.
+5. **`Sale.Status.DRAFT`/`CANCELLED` sales don't count toward a customer's
+   `total_purchases`** — a draft never reached checkout and a cancelled
+   sale never completed; every other status (including `RESERVED`
+   "on hold") counts, since real money/stock may already be committed.
+
+**Consequences.** No RBAC change — `customers.view`/`customers.manage`
+(reserved since Phase 1) already gate every `apps.customers` endpoint,
+held by Cashier/Manager/Admin, not Warehouse. Amazon-imported and any
+pre-Phase-11 offline sales keep `customer=None` — no backfill migration,
+since the column is nullable and the importer (Phase 9) still has no
+customer-identity data to attach. Frontend: `frontend/src/features/customers/`
+(list with inline create, detail with aggregates/order-history/serial-
+history and inline edit, and a `CustomerPicker` reused inside New Bill for
+both searching an existing customer and the walk-in quick-add flow),
+replacing the Phase 0 stub route at `/customers`.

@@ -210,7 +210,45 @@ follow-up work).
 
 ## Current Phase
 
-**Status:** Phase 10 done — Returns (ADR-015, `HEXAGARE_FEATURES.md` §31, §59). New **`Return`**/
+**Status:** Phase 11 done — Customers (ADR-016, `HEXAGARE_FEATURES.md` §29, §30). New
+**`Customer`** model in `apps/customers` (real implementation replacing the scaffold) — `name`
+(required), `phone`/`email`/`address`/`gstin`/`notes` (all optional regardless of type), `type`
+(`REGISTERED`/`WALK_IN`, default `REGISTERED`) — one model for both a registered customer and a
+lightweight walk-in; "registering" a walk-in later is just filling in more fields on the same row.
+**`Sale.customer`** (new, `apps/sales`) is a nullable, `PROTECT` string FK to `customers.Customer`
+— `null` is the true "no registration required" walk-in (§30, no `Customer` row at all), distinct
+from a `Customer` row with `type=WALK_IN` (a name/phone kept on record without full registration).
+Attaching/changing/clearing the customer on a sale is its own action, **`POST
+/sales/{id}/customer/`** (`{"customer": <id>|null}`, gated by the existing `orders.manage`,
+not tied to `sale.is_editable` since it's metadata not a cart/total change) — `SaleCreateSerializer`
+also accepts `customer` at creation. **`apps/customers/services.py`** computes purchase-history
+aggregates on read (not cached columns, same pattern as `Sale.amount_paid`): `total_purchases`
+(sum of `grand_total` across the customer's sales, excluding `DRAFT`/`CANCELLED`), `total_refunds`
+(sum of `Return.refund_total` on those sales), `outstanding_amount` (sum of positive `balance_due`),
+`serial_number_history` (every `SerializedUnit` ever sold to the customer, via
+`sale_line_unit__sale_line__sale__customer`). API under `/api/v1/customers/`: standard CRUD
+(`customers.view`/`customers.manage`, both reserved since Phase 1, held by Cashier/Manager/Admin,
+not Warehouse — no `rbac.py` change), search on name/phone/email/gstin, `?type=` filter,
+`CustomerDetailSerializer` returns profile + the three aggregates + light order history + serial
+history in one response (no separate paginated endpoint per section, matching this project's
+scale). Deletion is blocked while the customer has any sales history (`ValidationError`, same
+guard style as `inventory.Location`), not a raw FK `ProtectedError`. Frontend: new
+`frontend/src/features/customers/` — `CustomersPage` (list + inline create), `CustomerDetailPage`
+(profile view/edit, the three stat tiles, order history table, purchased-serial-numbers table),
+`CustomerPicker` (search-existing-or-add-walk-in, reused inside New Bill) — replacing the Phase 0
+stub route at `/customers` (nav entry already existed, gated on `customers.view`, unchanged). New
+Bill (`frontend/src/features/sales/new-bill-page.tsx`) gained a "Customer" card using
+`CustomerPicker`; Orders list gained a Customer column. Verified: `ruff check` + full `manage.py
+test` (303 tests, 19 new) clean; `eslint` + `tsc -b && vite build` clean; a full Chrome pass via
+the Claude-in-Chrome MCP on the live dev server — created a registered customer via the full form,
+searched by phone, walk-in-quick-added "Priya Verma" from inside New Bill, added a product,
+completed the sale (₹1,180 cash), then confirmed on her Customer detail page: Total purchases
+₹1,180, order history showing the COMPLETED order with ₹0 balance due, and the purchased serial
+number listed with status SOLD and a working link to its unit detail page; Orders list showed the
+new Customer column correctly (populated for the new sale, "—" for older unlinked sales). No
+console errors beyond a pre-existing, unrelated React Router future-flag warning.
+
+Previously: Phase 10 — Returns (ADR-015, `HEXAGARE_FEATURES.md` §31, §59). New **`Return`**/
 **`ReturnUnit`** models added to `apps/billing` (not a new app — same reasoning as `Payment`/
 `Invoice`; no domain app named "returns" exists in the fixed list). `Return` — `sale` FK, `reason`,
 `note`, `created_by`; `refund_total` is a computed property (sum of `ReturnUnit.refund_amount`),
@@ -295,9 +333,41 @@ server — uploaded a 2-row demo CSV (one importable, one bad-SKU row), watched 
 PENDING→PARTIAL with the bad row surfaced in `error_log`; created/activated/deleted a SKU mapping;
 created a category-scoped fixed-amount fee rule and confirmed it listed correctly.
 
-**Next up:** Phase 11 — Customers (see `HEXAGARE_BUILD_PROMPTS.md`).
-**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10.
-**Notes / deviations from the plan:** Phase 10: (91) **`ReturnUnit.serialized_unit` is a plain
+**Next up:** Phase 12 — Purchases + Suppliers (see `HEXAGARE_BUILD_PROMPTS.md`).
+**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11.
+**Notes / deviations from the plan:** Phase 11: (100) **`Sale.customer` is `on_delete=PROTECT`,
+not `SET_NULL`** — deleting a customer with sales history is blocked at the API level
+(`CustomerViewSet.perform_destroy` raises a friendly `ValidationError` before the FK constraint
+would ever fire), same guard style as `inventory.Location` (Phase 4 note 40) rather than silently
+orphaning historical sales. (101) **Editing a customer's full profile (address/GSTIN/notes) is
+only available from the Customer detail page, not inline from the list** — the list row
+(`CustomerListItem`) deliberately omits those fields (kept light for the table), so an inline
+edit form seeded from a list row would `PATCH` blank values over them; the detail page always has
+the full `CustomerDetailSerializer` payload to seed the edit form correctly. (102) **Attaching a
+customer to a sale is not gated on `sale.is_editable`** (contrast `lines/`/`units/`, which require
+`DRAFT`) — linking a customer is metadata, not a cart/total change, so it works on a `RESERVED`
+(on-hold) or `COMPLETED` sale too; `SaleViewSet.set_customer` uses `get_object()`, not
+`_editable_sale()`. (103) **`total_purchases` excludes `DRAFT` and `CANCELLED` sales only** — a
+`RESERVED` (on-hold, partially paid) sale still counts, since real stock/money may already be
+committed; this was a judgment call (not spelled out in HEXAGARE_FEATURES.md §29) rather than a
+strict "must be fully paid" rule. (104) **No new `InventoryTransaction`/ledger changes** — this
+phase is customer metadata + read-only aggregation, it does not touch the inventory ledger or the
+`SerializedUnit` state machine at all. (105) 284→303 backend tests (19 new:
+`apps/customers/tests/{test_api,test_services}.py` covering CRUD/search/type-filter/RBAC/
+delete-guard and aggregate correctness built on a real `CompleteSaleService`/`ReturnService` flow
+rather than hand-built totals; 4 more in `apps/sales/tests/test_sales_api.py` for the
+`customer/` attach action). `ruff check` and `eslint`/`tsc -b && vite build` both clean;
+`python manage.py spectacular --fail-on-warn` needed one new `ENUM_NAME_OVERRIDES` entry
+(`CustomerTypeEnum`, `Customer.Type` collided with another field also named `type`) plus
+`@extend_schema_field` on the five new `SerializerMethodField`s on `CustomerDetailSerializer` —
+both fixed rather than left as new warnings, unlike the pre-existing `line_id`/`unit_id`/
+`return_unit_id` path-param class (Phase 8 note 69) which stays unannotated to match precedent.
+(106) Chrome DevTools MCP not connected — verified live via the Claude-in-Chrome MCP instead: full
+round trip (create registered customer via the full form → search by phone → walk-in quick-add
+from inside New Bill → add product → complete sale → customer detail page shows correct
+aggregates/order history/serial history with a working link to the unit) plus the Orders list's
+new Customer column, all exercised against the live dev server with no console errors beyond a
+pre-existing unrelated React Router warning. Phase 10: (91) **`ReturnUnit.serialized_unit` is a plain
 `ForeignKey`, not `OneToOneField`** (contrast `SaleLineUnit`) — a unit restored to `AVAILABLE`
 after inspection can be sold and returned again later, so it may legitimately have more than one
 `ReturnUnit` row over its lifetime; a `OneToOneField` would have blocked that on the second return.
