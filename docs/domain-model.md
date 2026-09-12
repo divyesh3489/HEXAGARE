@@ -744,5 +744,77 @@ sale)" card was added to `SerializedUnitDetailPage`, shown only for a `SOLD`/`RE
 gated on `finance.view` — replacing the Phase 0 stub routes at `/finance/expenses` and
 `/finance/profit`.
 
-## Reports / Notifications
-_Not yet built (later phases)._ Scaffold apps only.
+## Reports / Exports (`apps/reports`, Phase 14)
+
+`ReportsService` (`apps/reports/services.py`) is a read-only aggregation, same Python-loop style as
+`FinanceService`/`apps.customers.services` — no cached columns, one method per report type
+(`sales`, `inventory`, `inventory_movement`, `serial_numbers`, `serial_number_history`, `products`,
+`financial`), every one returning `(summary: dict, rows: list[dict])`. `rows` is the flat shape used
+both for the on-screen table and for CSV/Excel export — nothing is computed twice. Reuses rather
+than re-derives: `FinanceService.summary()`/`by_channel()` for the Sales report's profit line and
+the whole Financial report, `apps.inventory.services.alerts.compute_alerts()` for the Inventory
+report's low/out-of-stock/overstock counts. Two filter vocabularies: `channel` (`SalesChannel`)
+scopes Sales/Products/Financial; `location` (`Location`) scopes Inventory/Serial Numbers, since
+stock buckets are location-scoped, not channel-scoped.
+
+`ReportExport` tracks a CSV/Excel export job (`report_type`, `export_format`, `filters` JSONField,
+`status` PENDING→READY/FAILED, `file`, `error_message`, `requested_by`) — every export, not just
+large ones, goes through Celery (`apps.reports.tasks.generate_report_export`), enqueued via
+`transaction.on_commit`. `apps.reports.services.run_report(report_type, filters)` is the single
+dispatch point both the GET report views and the export task call.
+
+API under `/api/v1/reports/`: `sales/`, `inventory/` (`?view=movement` for the ledger view),
+`serial-numbers/`, `serial-number-history/`, `products/`, `financial/` (all `reports.view`), plus
+`exports/` (create/list/retrieve + `{id}/download/`, `reports.export`) — both reserved since Phase
+1, Admin/Manager only.
+
+Frontend: `frontend/src/features/reports/` — `ReportsPage` with a button-group tab per report type,
+date-range/channel/location/category filters, a generic rows table (columns derived from row keys),
+and an Export dropdown (CSV/Excel) that polls the export job and triggers a download once READY.
+
+## Dashboard widgets (`apps/reports/dashboard.py`, Phase 16, ADR-019)
+
+`DashboardService` — four independently-callable, param-mostly-free methods behind the Dashboard
+page's four widget groups (HEXAGARE_FEATURES.md §3), living in `apps/reports` (the one cross-domain
+aggregation app) rather than a new `apps/dashboard` app — see ADR-019 for the full placement/RBAC
+reasoning:
+
+- `sales()` — a fixed snapshot, no query params: running totals (`total_sales`, `total_orders`,
+  `products_sold`, `units_sold`, per-channel breakdown) plus fixed calendar windows (today/week/
+  month/year).
+- `inventory()` — `SerializedUnit` status counts (available/reserved/in_transit/sold/returned/
+  damaged/lost) plus low/out-of-stock/overstock **counts** from `compute_alerts()`.
+- `finance(date_from, date_to)` — delegates straight to `FinanceService.summary()`; optional query
+  params, default the current calendar month.
+- `analytics()` — a 30-day `sales_graph` (daily totals, split by channel — feeds both the sales
+  trend chart and the Amazon-vs-Offline comparison chart from one payload), top-selling
+  products/SKUs (`ReportsService.sales(group_by=...)`, top 5 by units sold), a low-stock **list**
+  (complements `inventory()`'s count), and recent orders/returns/stock movements (last 10 each).
+  §3's "Recent barcode scans"/"Recent notifications" are out of scope — neither has a backing data
+  model yet (see ADR-019).
+
+API under `/api/v1/reports/dashboard/`: `sales/` (`sales.view`), `inventory/` (`inventory.view`),
+`finance/` (`finance.view`), `analytics/` (`reports.view`) — each widget group gated by the same
+view permission that domain already uses elsewhere, not a new `dashboard` codename, so a role's
+dashboard shows exactly the groups its existing permissions cover.
+
+Frontend: `frontend/src/features/dashboard/` — one hook + one section component per group, each
+with its own independent loading/error state (a role without `finance.view`/`reports.view` sees a
+clean "Couldn't load ..." message on just that card) — replacing the Phase 0 stub at `/`. First use
+of `recharts` (`sales-trend-chart.tsx`, `channel-comparison-chart.tsx`), kept in the main bundle
+since the Dashboard is the landing page every user hits.
+
+## Notifications (`apps/notifications`, Phase 15)
+
+No models of its own. Two isolated sender classes in `services.py` — `EmailNotificationService`
+(Django's `EmailMessage`/`EMAIL_BACKEND`) and `WhatsAppCloudAPI` + `WhatsAppNotificationService`
+(the Meta Cloud API's `/messages` endpoint via `requests`) — and two Celery tasks:
+`send_invoice_delivery(delivery_id)` (dispatches by channel, updates the Phase 8 `InvoiceDelivery`
+row `SENT`/`FAILED`) and `send_low_stock_alerts()` (the project's first `CELERY_BEAT_SCHEDULE`
+entry, reuses `apps.inventory.services.alerts.compute_alerts()` unchanged, digests to whichever of
+`LOW_STOCK_ALERT_EMAILS`/`LOW_STOCK_ALERT_WHATSAPP_TO` are configured). `InvoiceViewSet.send`
+(`POST /billing/invoices/{id}/send/`, `billing.manage`) creates the `InvoiceDelivery` row and
+enqueues the task via `transaction.on_commit`.
+
+Frontend: `InvoiceDetailPage` gained a "Send invoice" card (channel select + recipient + Send) and
+renders `invoice.deliveries` with a status badge per row.

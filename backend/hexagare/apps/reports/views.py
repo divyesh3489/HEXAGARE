@@ -1,4 +1,4 @@
-"""Reports + exports API (Phase 14).
+"""Reports + exports API (Phase 14) + dashboard widgets (Phase 16).
 
 - ``reports/sales/``                    -- ``reports.view``
 - ``reports/inventory/``                -- ``reports.view`` (``?view=movement``
@@ -9,12 +9,17 @@
 - ``reports/financial/``                -- ``reports.view``
 - ``reports/exports/``                  -- create/list/retrieve, ``reports.export``
 - ``reports/exports/{id}/download/``    -- binary download once READY, ``reports.export``
+- ``reports/dashboard/sales/``          -- ``sales.view``
+- ``reports/dashboard/inventory/``      -- ``inventory.view``
+- ``reports/dashboard/finance/``        -- ``finance.view``
+- ``reports/dashboard/analytics/``      -- ``reports.view``
 """
 
 from __future__ import annotations
 
+from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import mixins
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -25,8 +30,14 @@ from rest_framework.viewsets import GenericViewSet
 from apps.accounts.permissions import require
 from apps.common.renderers import BinaryRenderer
 
+from .dashboard import DashboardService
 from .models import ReportExport
 from .serializers import (
+    DashboardAnalyticsSerializer,
+    DashboardFinanceQuerySerializer,
+    DashboardFinanceSerializer,
+    DashboardInventorySerializer,
+    DashboardSalesSerializer,
     DateRangeChannelQuerySerializer,
     InventoryQuerySerializer,
     ReportExportCreateSerializer,
@@ -40,6 +51,9 @@ from .services import run_report
 
 _VIEW = "reports.view"
 _EXPORT = "reports.export"
+_SALES_VIEW = "sales.view"
+_INVENTORY_VIEW = "inventory.view"
+_FINANCE_VIEW = "finance.view"
 
 
 class ReportsViewSet(GenericViewSet):
@@ -95,6 +109,54 @@ class ReportsViewSet(GenericViewSet):
         return self._respond(
             ReportExport.ReportType.FINANCIAL, DateRangeChannelQuerySerializer, request
         )
+
+
+class DashboardViewSet(GenericViewSet):
+    """Phase 16 dashboard widget groups -- one aggregate endpoint per group
+    (``dashboard/sales/``, ``dashboard/inventory/``, ``dashboard/finance/``,
+    ``dashboard/analytics/``), independently cacheable and independently
+    permissioned via :meth:`get_permissions` so every role sees the groups
+    its own view permission already covers, rather than gating the whole
+    dashboard behind ``reports.view`` alone."""
+
+    serializer_class = ReportResultSerializer
+
+    def get_permissions(self):
+        codename = {
+            "sales": _SALES_VIEW,
+            "inventory": _INVENTORY_VIEW,
+            "finance": _FINANCE_VIEW,
+            "analytics": _VIEW,
+        }[self.action]
+        return [require(codename)()]
+
+    @extend_schema(responses=DashboardSalesSerializer)
+    @action(detail=False, methods=["get"])
+    def sales(self, request):
+        return Response(DashboardService.sales())
+
+    @extend_schema(responses=DashboardInventorySerializer)
+    @action(detail=False, methods=["get"])
+    def inventory(self, request):
+        return Response(DashboardService.inventory())
+
+    @extend_schema(
+        parameters=[OpenApiParameter("date_from", str), OpenApiParameter("date_to", str)],
+        responses=DashboardFinanceSerializer,
+    )
+    @action(detail=False, methods=["get"])
+    def finance(self, request):
+        query = DashboardFinanceQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        today = timezone.localdate()
+        date_from = query.validated_data.get("date_from") or today.replace(day=1)
+        date_to = query.validated_data.get("date_to") or today
+        return Response(DashboardService.finance(date_from, date_to))
+
+    @extend_schema(responses=DashboardAnalyticsSerializer)
+    @action(detail=False, methods=["get"])
+    def analytics(self, request):
+        return Response(DashboardService.analytics())
 
 
 class ReportExportDownloadRenderer(BinaryRenderer):

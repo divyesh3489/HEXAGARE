@@ -103,6 +103,24 @@ class SerialNumberHistoryQuerySerializer(serializers.Serializer):
     serial_number = serializers.CharField()
 
 
+class DashboardFinanceQuerySerializer(serializers.Serializer):
+    """Finance dashboard widget: optional date range, defaulting to the
+    current calendar month (applied in the view, not here, since a
+    serializer field can't carry a "today"-relative default)."""
+
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+
+    def validate(self, attrs):
+        if (
+            attrs.get("date_from")
+            and attrs.get("date_to")
+            and attrs["date_from"] > attrs["date_to"]
+        ):
+            raise serializers.ValidationError("date_from must not be after date_to.")
+        return attrs
+
+
 #: One query serializer per :class:`ReportExport.ReportType` -- reused to
 #: validate both a GET's query params and a POST export's ``filters``.
 REPORT_QUERY_SERIALIZERS: dict[str, type[serializers.Serializer]] = {
@@ -126,6 +144,68 @@ class ReportResultSerializer(serializers.Serializer):
 
     summary = serializers.DictField()
     rows = serializers.ListField(child=serializers.DictField())
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard (Phase 16) -- one loosely-typed serializer per widget group,
+# matching how ReportResultSerializer above stays a DictField wrapper rather
+# than pinning every aggregate field: apps.reports.dashboard.DashboardService
+# is the single source of truth for the actual keys.
+# --------------------------------------------------------------------------- #
+
+
+class DashboardSalesSerializer(serializers.Serializer):
+    total_sales = serializers.DecimalField(max_digits=12, decimal_places=2)
+    today_sales = serializers.DecimalField(max_digits=12, decimal_places=2)
+    weekly_sales = serializers.DecimalField(max_digits=12, decimal_places=2)
+    monthly_sales = serializers.DecimalField(max_digits=12, decimal_places=2)
+    yearly_sales = serializers.DecimalField(max_digits=12, decimal_places=2)
+    by_channel = serializers.DictField()
+    total_orders = serializers.IntegerField()
+    products_sold = serializers.IntegerField()
+    units_sold = serializers.IntegerField()
+
+
+class DashboardInventorySerializer(serializers.Serializer):
+    total_inventory = serializers.IntegerField()
+    total_serialized_units = serializers.IntegerField()
+    available_units = serializers.IntegerField()
+    reserved_units = serializers.IntegerField()
+    in_transit_units = serializers.IntegerField()
+    sold_units = serializers.IntegerField()
+    returned_units = serializers.IntegerField()
+    damaged_units = serializers.IntegerField()
+    lost_units = serializers.IntegerField()
+    low_stock_products = serializers.IntegerField()
+    out_of_stock_products = serializers.IntegerField()
+    overstock_products = serializers.IntegerField()
+
+
+class DashboardFinanceSerializer(serializers.Serializer):
+    date_from = serializers.DateField()
+    date_to = serializers.DateField()
+    revenue = serializers.DecimalField(max_digits=12, decimal_places=2)
+    taxable_sales = serializers.DecimalField(max_digits=12, decimal_places=2)
+    gst_collected = serializers.DecimalField(max_digits=12, decimal_places=2)
+    product_cost = serializers.DecimalField(max_digits=12, decimal_places=2)
+    amazon_fees = serializers.DecimalField(max_digits=12, decimal_places=2)
+    shipping = serializers.DecimalField(max_digits=12, decimal_places=2)
+    advertising = serializers.DecimalField(max_digits=12, decimal_places=2)
+    packaging = serializers.DecimalField(max_digits=12, decimal_places=2)
+    other_expenses = serializers.DecimalField(max_digits=12, decimal_places=2)
+    gross_profit = serializers.DecimalField(max_digits=12, decimal_places=2)
+    net_profit = serializers.DecimalField(max_digits=12, decimal_places=2)
+    profit_margin = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
+class DashboardAnalyticsSerializer(serializers.Serializer):
+    sales_graph = serializers.ListField(child=serializers.DictField())
+    top_selling_products = serializers.ListField(child=serializers.DictField())
+    top_selling_skus = serializers.ListField(child=serializers.DictField())
+    low_stock_products = serializers.ListField(child=serializers.DictField())
+    recent_orders = serializers.ListField(child=serializers.DictField())
+    recent_returns = serializers.ListField(child=serializers.DictField())
+    recent_stock_movements = serializers.ListField(child=serializers.DictField())
 
 
 # --------------------------------------------------------------------------- #

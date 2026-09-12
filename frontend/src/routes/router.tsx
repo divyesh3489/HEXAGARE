@@ -12,6 +12,7 @@ import {
   LabelBatchesPage,
 } from "@/features/bulk-generate";
 import { CustomerDetailPage, CustomersPage } from "@/features/customers";
+import { DashboardPage } from "@/features/dashboard";
 import { ExpensesPage } from "@/features/expenses";
 import { ProfitSummaryPage } from "@/features/finance";
 import {
@@ -34,7 +35,6 @@ import { NewReturnPage, ReturnDetailPage, ReturnsPage } from "@/features/returns
 import { NewBillPage, OrdersPage } from "@/features/sales";
 import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
 import { SupplierDetailPage, SuppliersPage } from "@/features/suppliers";
-import { DashboardPage } from "./dashboard";
 import { LoginPage } from "./login";
 import { StubPage } from "./stub-page";
 

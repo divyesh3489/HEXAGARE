@@ -1075,3 +1075,87 @@ Frontend: `frontend/src/features/expenses/` (list + inline create/edit) and
 tiles, by-channel table), plus a "Profit (this sale)" card on
 `SerializedUnitDetailPage` for a `SOLD`/`RETURNED` unit — replacing the
 Phase 0 stub routes at `/finance/expenses` and `/finance/profit`.
+
+## ADR-019 — Dashboard widgets live in `apps/reports`, gated per-group by
+each group's own existing view permission (not a new `dashboard` app or
+codename)
+
+**Status:** Accepted (Phase 16)
+
+**Context.** HEXAGARE_FEATURES.md §3 asks for four dashboard widget groups
+(Sales, Inventory, Finance, Analytics) as separate, independently-cacheable
+aggregate endpoints. `apps/reports/dashboard.py`'s module docstring covers
+the aggregation reuse choices question-by-question (see there for the
+low-stock/top-selling/recent-lists mechanics); this ADR is the placement and
+access-control decision that governs where the code lives and who can see
+it, since the Target Architecture's fixed domain-app list (`accounts,
+products, inventory, sales, integrations, billing, customers, purchases,
+suppliers, expenses, reports, notifications, common`) has no `dashboard`
+entry, and no `dashboard`/`analytics` codename was reserved in `rbac.py`.
+
+**Decision.**
+1. **The four dashboard endpoints live in `apps/reports`**
+   (`apps/reports/dashboard.py` + a `DashboardViewSet` in `apps/reports/
+   views.py`, mounted at `reports/dashboard/{sales,inventory,finance,
+   analytics}/`) rather than a new `apps/dashboard` app. `apps/reports` is
+   already Hexagare's one cross-domain read-aggregation app — precisely the
+   shape a dashboard needs — and every widget group reuses a service that
+   app already imports or itself owns: `FinanceService.summary()` (Finance),
+   `compute_alerts()` (Inventory's alert counts and Analytics' low-stock
+   list), `ReportsService.sales(group_by=...)` (Analytics' top-selling
+   lists). A new app would either duplicate those imports or import
+   `apps.reports` anyway, and `apps/common` was ruled out — it is a true
+   catch-all (currently just the health check), and CLAUDE.md's own
+   direction is to add functionality to the domain app it belongs to, not a
+   catch-all.
+2. **No new `dashboard`/`analytics` RBAC codename.** Each widget-group
+   action is gated in `DashboardViewSet.get_permissions()` by the view
+   permission that domain already uses elsewhere — `sales.view` /
+   `inventory.view` / `finance.view` for the first three groups, `reports.
+   view` for Analytics (it mixes cross-domain figures — sales trend,
+   top-sellers, recent returns/stock movements — the same shape `reports.
+   view` already gates for the Products/Financial reports). This means a
+   role's dashboard sees exactly the groups its existing permissions already
+   cover: Cashier/Warehouse (who hold `sales.view`/`inventory.view` but not
+   `finance.view`/`reports.view`) see Sales+Inventory tiles and a clean
+   "Couldn't load ..." message on the Finance/Analytics cards, without a new
+   permission to maintain. The alternative — one `dashboard.view` codename
+   gating the whole page — was rejected because it would either lock
+   Cashier/Warehouse out of a landing page every authenticated user hits, or
+   grant them finance figures they don't otherwise have access to.
+3. **The Sales widget group takes no query parameters** — every figure is
+   either a running total or a fixed calendar window (today/week/month/
+   year), computed fresh on each call. This was a deliberate simplification
+   over a user-selectable range (which every other report/finance endpoint
+   in the codebase supports): it keeps the endpoint's cache key constant,
+   matching HEXAGARE_BUILD_PROMPTS.md Phase 16's "independently cacheable"
+   requirement, and matches how §3 lists these as always-visible running
+   totals rather than a report a user filters. The Finance widget group
+   *does* take an optional `date_from`/`date_to` (default: current calendar
+   month) since profit figures are naturally range-scoped, same as
+   `ProfitSummaryPage`.
+4. **§3's "Recent barcode scans" and "Recent notifications" are out of
+   scope this phase** — neither has a backing data model (no scan-log model
+   anywhere in the codebase; `apps.notifications` has no models of its own,
+   per the Phase 15 status note above). Both belong with Phase 17's
+   activity/audit log, the first place either kind of event would actually
+   get persisted.
+
+**Consequences.** `apps/reports/dashboard.py` (`DashboardService`, four
+static methods, no persistence of its own — every call re-derives from live
+tables, same no-cached-columns style as `ReportsService`/`FinanceService`),
+`apps/reports/views.py` (`DashboardViewSet`), `apps/reports/serializers.py`
+(one response serializer per group + a finance query serializer),
+`apps/reports/urls.py` (`dashboard/` registered on the existing router). No
+`rbac.py` change, no migration. Frontend: `frontend/src/features/dashboard/`
+(one hook + one section component per group, each with its own independent
+loading/error state so one group's 403 or failure never blocks the others)
+plus `sales-trend-chart.tsx`/`channel-comparison-chart.tsx` (first use of
+`recharts`, a new frontend dependency — kept in the main bundle rather than
+code-split, since the Dashboard is the landing page every user hits,
+unlike the ADR-011 code-split candidates) — replacing the Phase 0 stub at
+`/` (`frontend/src/routes/dashboard.tsx`, which re-exported the Phase 0
+placeholder directly rather than importing from `features/`, the one route
+that didn't follow the rest of `router.tsx`'s `@/features/...` import
+convention; removed in favor of importing `DashboardPage` from
+`@/features/dashboard` like every other page).

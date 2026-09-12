@@ -210,7 +210,45 @@ follow-up work).
 
 ## Current Phase
 
-**Status:** Phase 15 done — Notifications (Email + WhatsApp) (`HEXAGARE_FEATURES.md` §47,
+**Status:** Phase 16 done — Dashboard (`HEXAGARE_FEATURES.md` §3, ADR-019 — placement in
+`apps/reports` rather than a new `apps/dashboard` app, and per-group RBAC reusing each domain's
+existing view permission rather than a new `dashboard` codename). New `apps/reports/dashboard.py`
+(`DashboardService`, four static methods, no persistence of its own) behind a new `DashboardViewSet`
+mounted at `/api/v1/reports/dashboard/{sales,inventory,finance,analytics}/` — `sales()` is a fixed,
+param-free snapshot (running totals + today/week/month/year + per-channel breakdown, kept
+param-free so its cache key is stable); `inventory()` is `SerializedUnit` status counts plus
+low/out-of-stock/overstock counts from `compute_alerts()`; `finance(date_from, date_to)` (default:
+current calendar month) delegates straight to `FinanceService.summary()`; `analytics()` is a 30-day
+`sales_graph` (daily totals split by channel, feeding both the sales-trend and Amazon-vs-Offline
+charts from one payload), top-selling products/SKUs via `ReportsService.sales(group_by=...)`, a
+low-stock list, and recent orders/returns/stock-movements (last 10 each) — every widget reuses an
+existing service rather than re-deriving aggregation logic. Each group is gated in
+`get_permissions()` by its own domain's existing view permission (`sales.view`/`inventory.view`/
+`finance.view`/`reports.view` for Analytics), not a new codename — see ADR-019 for why. §3's
+"Recent barcode scans"/"Recent notifications" are out of scope — neither has a backing data model
+yet (no scan-log model; `apps.notifications` has no models of its own per the Phase 15 note below);
+both are left for Phase 17's activity/audit log. Frontend: `frontend/src/features/dashboard/`
+replaces the Phase 0 stub at `/` — one hook + one section component per widget group, each with its
+own independent loading/error state so a role without `finance.view`/`reports.view` sees a clean
+"Couldn't load ..." message on just that card rather than the whole page breaking; two `recharts`
+charts (first use of that dependency — added to `frontend/package.json`, kept in the main bundle
+rather than code-split like the ADR-011 candidates, since the Dashboard is the landing page every
+user hits). Verified: `ruff check` clean; full `manage.py test` (401 tests, 9 new,
+`apps/reports/tests/test_dashboard.py` — RBAC per widget group across Admin/Manager/Cashier/
+Warehouse plus one content-correctness test per group) clean; `python manage.py spectacular
+--fail-on-warn` surfaced only the same 5 pre-existing path-param warnings from earlier phases
+(Phase 8 note 69's class), nothing new from the dashboard endpoints. `eslint` and `tsc -b && vite
+build` both clean. **Verified live** via the Claude-in-Chrome MCP against the running dev stack
+(after a `docker compose up -d --force-recreate --renew-anon-volumes frontend` — the anonymous
+`node_modules` volume needed a fresh recreate, not just `--build`, to actually mount the image's
+`recharts` install; a plain `--build` alone silently kept serving the stale volume, same class of
+gotcha as the Phase 6/9/15 container-recreate notes, just one step further this time): Admin login
+shows all four widget groups populated from seed/demo data plus both charts rendering correctly;
+Cashier login shows Sales+Inventory tiles with clean "Couldn't load finance figures."/"Couldn't
+load analytics." messages on the two gated cards, confirming the degraded-access pattern; no
+console errors beyond the pre-existing React Router future-flag warning on either login.
+
+Previously: Phase 15 done — Notifications (Email + WhatsApp) (`HEXAGARE_FEATURES.md` §47,
 narrowed to exactly the Phase 15 build prompt — invoice send + low-stock digest, not the
 broader in-app "Dashboard Notifications" bell/center from §47, which is future/Phase-16-adjacent
 territory — no ADR, since nothing here departs from established patterns). **`apps/notifications`**
@@ -573,8 +611,15 @@ server — uploaded a 2-row demo CSV (one importable, one bad-SKU row), watched 
 PENDING→PARTIAL with the bad row surfaced in `error_log`; created/activated/deleted a SKU mapping;
 created a category-scoped fixed-amount fee rule and confirmed it listed correctly.
 
-**Next up:** Phase 14 — Reports + Exports (see `HEXAGARE_BUILD_PROMPTS.md`).
-**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12, Phase 13.
+**Next up:** Phase 17 — Settings + Security/Audit Polish (see `HEXAGARE_BUILD_PROMPTS.md`).
+**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12, Phase 13, Phase 14, Phase 15, Phase 16.
+**Doc-hygiene note (caught this phase, not a Phase 16 deviation):** these two lines had been left
+stale at "Next up: Phase 14 / Completed: ...Phase 13" since before Phase 14 started — Phase 14 and
+15 both finished (see their **Status**/**Previously** write-ups above) without updating them. Fixed
+here; `docs/domain-model.md`'s "Reports / Notifications" section had the same staleness (still read
+"Not yet built (later phases). Scaffold apps only." after both shipped) and was filled in for real
+in the same pass — see the new "Reports / Exports", "Dashboard widgets" and "Notifications"
+sections there.
 **Notes / deviations from the plan:** Phase 13: (118) **No new RBAC codename was added** — unlike
 every prior phase that introduced a new resource, `expenses.manage`/`finance.view` were already
 both reserved since Phase 1, and (per ADR-018) `expenses.manage` alone gates the whole `Expense`
