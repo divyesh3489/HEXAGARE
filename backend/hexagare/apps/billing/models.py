@@ -148,8 +148,9 @@ class Invoice(models.Model):
 
 class InvoiceDelivery(models.Model):
     """Send-status tracking for an :class:`Invoice` -- schema only in Phase 8;
-    Phase 15 (Notifications) is what actually creates/updates rows here when
-    the "Send invoice" action goes out over email/WhatsApp."""
+    rows are created by ``InvoiceViewSet.send`` (``apps.billing.views``) and
+    updated by ``apps.notifications.tasks.send_invoice_delivery`` once the
+    email/WhatsApp send actually goes out (or fails)."""
 
     class Channel(models.TextChoices):
         EMAIL = "EMAIL", "Email"
@@ -166,6 +167,11 @@ class InvoiceDelivery(models.Model):
         related_name="deliveries",
     )
     channel = models.CharField(max_length=16, choices=Channel.choices)
+    #: The email address / WhatsApp phone number actually targeted -- either
+    #: an explicit override from the send request, or resolved from the
+    #: sale's customer at send time. Kept here (not re-derived) since the
+    #: customer's contact details can change after the delivery is recorded.
+    recipient = models.CharField(max_length=255, blank=True)
     status = models.CharField(
         max_length=12,
         choices=Status.choices,

@@ -31,7 +31,15 @@ class PaymentSerializer(serializers.ModelSerializer):
 class InvoiceDeliverySerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoiceDelivery
-        fields = ["id", "channel", "status", "sent_at", "error_message", "created_at"]
+        fields = [
+            "id",
+            "channel",
+            "recipient",
+            "status",
+            "sent_at",
+            "error_message",
+            "created_at",
+        ]
         read_only_fields = fields
 
 
@@ -67,6 +75,16 @@ class InvoiceDetailSerializer(InvoiceListSerializer):
     class Meta(InvoiceListSerializer.Meta):
         fields = InvoiceListSerializer.Meta.fields + ["sale_detail", "payments", "deliveries"]
         read_only_fields = fields
+
+
+class InvoiceSendSerializer(serializers.Serializer):
+    """Input for ``POST /billing/invoices/{id}/send/`` -- ``recipient`` is
+    optional, overriding the sale's linked customer's email/phone (whichever
+    the request resolves is what actually gets stored on the created
+    ``InvoiceDelivery`` row)."""
+
+    channel = serializers.ChoiceField(choices=InvoiceDelivery.Channel.choices)
+    recipient = serializers.CharField(required=False, allow_blank=True, max_length=255)
 
 
 class PaymentEntrySerializer(serializers.Serializer):

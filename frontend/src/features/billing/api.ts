@@ -1,5 +1,12 @@
 import { api, apiRequest, type Paginated } from "@/api/client";
-import type { CheckoutResult, Invoice, InvoiceListItem, Payment, PaymentEntry } from "./types";
+import type {
+  CheckoutResult,
+  DeliveryChannel,
+  Invoice,
+  InvoiceListItem,
+  Payment,
+  PaymentEntry,
+} from "./types";
 
 const BASE = "/billing";
 
@@ -36,6 +43,10 @@ export const billingApi = {
     apiRequest<Blob>(`${BASE}/invoices/${id}/pdf/`, { method: "GET", parse: "blob" }),
   payments: (sale?: number) =>
     api.get<Paginated<Payment>>(`${BASE}/payments/${qs({ sale, page_size: 100 })}`),
+  /** Sends the invoice over email/WhatsApp -- `recipient` defaults to the
+   * sale's linked customer's email/phone server-side when omitted. */
+  sendInvoice: (id: number, channel: DeliveryChannel, recipient?: string) =>
+    api.post<Invoice>(`${BASE}/invoices/${id}/send/`, { channel, recipient }),
 };
 
 export const billingKeys = {
