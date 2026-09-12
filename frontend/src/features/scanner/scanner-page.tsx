@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Camera, Loader2, ScanLine, SwitchCamera } from "lucide-react";
 
 import { PageHeader } from "@/components/page-header";
+import { ScanFrameMarks } from "@/components/scan-frame";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,16 +13,9 @@ import { useBarcodeScanner } from "./use-barcode-scanner";
 
 /** Corner brackets + sweeping line drawn over the camera preview. */
 function Viewfinder() {
-  const corner = "absolute size-7 border-white/80";
   return (
     <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-      <div className="relative aspect-square w-3/5">
-        <span className={`${corner} left-0 top-0 border-l-2 border-t-2`} />
-        <span className={`${corner} right-0 top-0 border-r-2 border-t-2`} />
-        <span className={`${corner} bottom-0 left-0 border-b-2 border-l-2`} />
-        <span className={`${corner} bottom-0 right-0 border-b-2 border-r-2`} />
-        <span className="animate-scanline absolute inset-x-2 top-1/2 h-0.5 -translate-y-1/2 rounded bg-sky-400/80" />
-      </div>
+      <ScanFrameMarks className="w-3/5" />
     </div>
   );
 }

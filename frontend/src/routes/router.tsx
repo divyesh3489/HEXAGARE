@@ -29,6 +29,7 @@ import {
   PurchaseOrdersPage,
   ReceiveStockPage,
 } from "@/features/purchases";
+import { ReportsPage } from "@/features/reports";
 import { NewReturnPage, ReturnDetailPage, ReturnsPage } from "@/features/returns";
 import { NewBillPage, OrdersPage } from "@/features/sales";
 import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
@@ -73,7 +74,6 @@ const scannerFallback = (
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
   { path: "finance/payments", title: "Payments", phase: "Phase 8" },
-  { path: "reports", title: "Reports", phase: "Phase 14" },
   { path: "notifications", title: "Notifications", phase: "Phase 15" },
   { path: "settings", title: "General Settings", phase: "Phase 17" },
   { path: "settings/users", title: "Users", phase: "Phase 17" },
@@ -120,6 +120,7 @@ export const router = createBrowserRouter([
           { path: "purchases/orders/new", element: <NewPurchaseOrderPage /> },
           { path: "purchases/orders/:orderId", element: <PurchaseOrderDetailPage /> },
           { path: "purchases/receive", element: <ReceiveStockPage /> },
+          { path: "reports", element: <ReportsPage /> },
           {
             path: "barcode/scan",
             element: (
