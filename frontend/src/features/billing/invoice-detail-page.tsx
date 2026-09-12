@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Download, RefreshCw } from "lucide-react";
+import { Download } from "lucide-react";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
 import { PageHeader } from "@/components/page-header";
+import { ScanFrame } from "@/components/scan-frame";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -214,10 +215,10 @@ export function InvoiceDetailPage() {
           </CardHeader>
           <CardContent className="space-y-3 pt-0">
             {invoice.status === "PENDING" && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <RefreshCw className="size-4 animate-spin" />
-                Rendering the PDF… this page will update automatically.
-              </div>
+              <ScanFrame
+                message="Rendering the PDF… this page will update automatically."
+                className="aspect-video rounded-md"
+              />
             )}
 
             {invoice.status === "FAILED" && (

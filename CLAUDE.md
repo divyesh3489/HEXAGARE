@@ -210,7 +210,58 @@ follow-up work).
 
 ## Current Phase
 
-**Status:** Phase 13 done — Expenses + Profit/Finance (ADR-018, `HEXAGARE_FEATURES.md` §35-37).
+**Status:** Phase 14 done — Reports + Exports (`HEXAGARE_FEATURES.md` §38-44, narrowed per the
+build prompt to the six named report types and CSV/Excel only — no ADR, since nothing here departs
+from established patterns). New **`apps/reports`** (real implementation replacing the scaffold).
+**`ReportsService`** (`apps/reports/services.py`) is a read-only, no-cached-columns aggregation
+namespace (same Python-loop style as `FinanceService`) with one method per report — `sales`,
+`inventory`, `inventory_movement`, `serial_numbers`, `serial_number_history`, `products`,
+`financial` — every one returning `(summary: dict, rows: list[dict])`; `rows` is the flat shape
+used **both** for the on-screen table and for CSV/Excel export, so nothing is computed twice.
+Reuses rather than re-derives: `FinanceService.summary()`/`by_channel()` for the Sales report's
+profit line and the whole Financial report, `apps.inventory.services.alerts.compute_alerts()` for
+the Inventory report's low/out-of-stock/overstock counts, and the existing
+`apps.products.models.SerializedUnitEvent` log verbatim for Serial Number History (that model
+still only carries `from_status`/`to_status`/the *new* location/a free-text note — no previous
+location or related order/invoice/purchase/transfer links; this phase surfaces what's recorded, it
+doesn't extend that Phase 3 model). Two filter vocabularies matching the domain: `channel`
+(`SalesChannel`) scopes Sales/Products/Financial; `location` (`Location`) scopes
+Inventory/Serial Numbers, since stock buckets are location-scoped, not channel-scoped. Grouped
+Sales rows (by product/variant/category/serial) carry **gross** profit only (taxable sales minus
+product cost) — full fee-apportioned net profit stays a Financial-report-level figure, to avoid
+re-deriving Amazon-settlement attribution per row. **`ReportExport`** (new model) tracks a
+CSV/Excel export job — `report_type`, `export_format`, `filters` (JSONField, exactly the query
+params the job was requested with), `status` PENDING → READY/FAILED, `file`, `error_message`,
+`requested_by` — same shape as `Invoice`/`LabelBatch`. **Every** export (not just large ones) goes
+through Celery — `apps.reports.tasks.generate_report_export`, enqueued via `transaction.on_commit`
+after `apps.reports.services.create_export()` commits the row — one code path rather than
+branching sync/async by size. `apps/reports/exporters.py` (`rows_to_csv`/`rows_to_xlsx`, the
+latter via the new `openpyxl` dependency) is shared by every report type. `apps.reports.services.
+run_report(report_type, filters)` is the single dispatch point both the GET report views and the
+export task call — a report is queried identically whether it's rendered on screen or exported.
+API under **`/api/v1/reports/`**: `sales/`, `inventory/` (`?view=movement` switches to the ledger
+view), `serial-numbers/`, `serial-number-history/` (`?serial_number=`), `products/`, `financial/`
+(all `reports.view`, reserved since Phase 1, Admin/Manager only — no `rbac.py` change), plus
+`exports/` (create/list/retrieve + `{id}/download/`, all `reports.export`, same restriction).
+Frontend: new `frontend/src/features/reports/` — a `ReportsPage` with a button-group tab per
+report type (no new Tabs primitive — matches the plain-Tailwind select/button style already used
+elsewhere), date-range/channel/location/category filters per tab, a generic rows table (columns
+derived from the row keys, since shape varies by report/grouping), and an "Export" dropdown
+(CSV/Excel) that creates an export job, polls it (`useReportExportStatus`, same
+`refetchInterval`-while-PENDING idiom as `useLabelBatch`), and triggers a browser download once
+READY — replacing the Phase 0 stub route at `/reports` (nav entry already existed, gated
+`reports.view`, unchanged). Verified: `ruff check` clean; full `manage.py test` (375 tests, 26 new,
+all passing) — **10 pre-existing failures unrelated to this phase** were found in the same run
+(Invoice/LabelBatch/Amazon-import PDF-and-status tests all asserting a `on_commit`-enqueued task's
+result without wrapping the assertion in `captureOnCommitCallbacks`); confirmed via `git stash` that
+these 10 fail identically on the pre-Phase-14 tree (349 baseline tests), so they're a pre-existing
+gap in those tests' own setup, not a regression from this phase — left alone as out of scope,
+flagged here for whoever picks it up. `eslint` and `tsc -b && vite build` both clean. **Not
+verified live in the browser this phase** — the user is doing their own manual/live testing per
+CLAUDE.md's "User-reported bugs" section; the local Docker stack (backend + rebuilt
+celery-worker/celery-beat, now carrying `openpyxl`) is left running for that.
+
+Previously: Phase 13 — Expenses + Profit/Finance (ADR-018, `HEXAGARE_FEATURES.md` §35-37).
 New **`Expense`** model in `apps/expenses` (real implementation replacing the scaffold) —
 `category` (fixed `TextChoices`: Amazon fees/Shipping/Courier/Packaging/Advertising/
 Manufacturing/Raw materials/Offline expenses/Other expenses — a closed taxonomy, not a separate

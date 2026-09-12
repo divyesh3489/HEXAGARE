@@ -31,20 +31,17 @@ export function CameraScanPanel({ onAdd, onClose }: CameraScanPanelProps) {
   });
   stopRef.current = scanner.stop;
 
-  const startedRef = useRef(false);
-  useEffect(() => {
-    if (!startedRef.current) {
-      startedRef.current = true;
-      scanner.start();
-    }
-    return () => scanner.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Release the camera if the panel unmounts while scanning -- starting is
+  // left to a user tap (`scanner.start` needs a gesture to reliably prompt
+  // for permission), same as the standalone scanner page.
+  useEffect(() => () => stopRef.current(), []);
 
   const handleScanNext = () => {
     setJustScanned(null);
     scanner.start();
   };
+
+  const handleStart = () => scanner.start();
 
   const { state, errorMessage, isSupported, devices, videoRef } = scanner;
   const showVideo = (state === "starting" || state === "scanning") && !justScanned;
@@ -79,6 +76,11 @@ export function CameraScanPanel({ onAdd, onClose }: CameraScanPanelProps) {
                       : "Camera is off"
                     : "Camera unavailable"}
                 </span>
+                {isSupported && state === "idle" && (
+                  <Button size="sm" variant="secondary" onClick={handleStart}>
+                    <ScanLine /> Start scanning
+                  </Button>
+                )}
               </>
             )}
           </div>
