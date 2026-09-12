@@ -6,6 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# postgresql-client-17 (matching the postgres:17 service) so `pg_dump` is
+# available for apps.accounts.tasks.run_database_backup (Phase 17 manual DB
+# backup) -- this base image's own Debian release already carries it.
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 \
+    && rm -rf /var/lib/apt/lists/*
+
 # psycopg[binary] ships wheels, so no build toolchain is needed here.
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install -r requirements-dev.txt

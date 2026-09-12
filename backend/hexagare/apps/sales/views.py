@@ -21,6 +21,8 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from apps.accounts.audit import log_activity
+from apps.accounts.models import AuditLogEntry
 from apps.accounts.permissions import require
 
 from .models import Sale, SaleLine, SalesChannel
@@ -95,6 +97,7 @@ class SaleViewSet(
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         sale = serializer.save()
+        log_activity(actor=request.user, action=AuditLogEntry.Action.ORDER_CREATED, target=sale)
         return self._detail_response(sale, status_code=201)
 
     def _editable_sale(self, pk) -> Sale:
@@ -181,4 +184,5 @@ class SaleViewSet(
         SaleUnitService.release_all(sale, actor=request.user)
         sale.status = Sale.Status.CANCELLED
         sale.save(update_fields=["status", "updated_at"])
+        log_activity(actor=request.user, action=AuditLogEntry.Action.ORDER_CANCELLED, target=sale)
         return self._detail_response(sale)

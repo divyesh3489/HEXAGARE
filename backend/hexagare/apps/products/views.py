@@ -18,6 +18,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.audit import AuditMixin
+from apps.accounts.models import AuditLogEntry
 from apps.accounts.permissions import require
 from apps.common.renderers import BinaryRenderer
 
@@ -83,10 +85,14 @@ class CategoryViewSet(_CatalogPermissionMixin, viewsets.ModelViewSet):
         return qs
 
 
-class ProductViewSet(_CatalogPermissionMixin, viewsets.ModelViewSet):
+class ProductViewSet(_CatalogPermissionMixin, AuditMixin, viewsets.ModelViewSet):
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["name", "brand", "code", "variants__sku"]
     ordering_fields = ["name", "updated_at", "status"]
+
+    audit_created_action = AuditLogEntry.Action.PRODUCT_CREATED
+    audit_updated_action = AuditLogEntry.Action.PRODUCT_UPDATED
+    audit_deleted_action = AuditLogEntry.Action.PRODUCT_DELETED
 
     def get_serializer_class(self):
         return ProductListSerializer if self.action == "list" else ProductDetailSerializer
@@ -119,11 +125,17 @@ class ProductViewSet(_CatalogPermissionMixin, viewsets.ModelViewSet):
         return super().list(request, *args, **kwargs)
 
 
-class ProductVariantViewSet(_CatalogPermissionMixin, viewsets.ModelViewSet):
+class ProductVariantViewSet(_CatalogPermissionMixin, AuditMixin, viewsets.ModelViewSet):
     serializer_class = ProductVariantSerializer
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["sku", "name", "barcode"]
     ordering_fields = ["sku", "selling_price", "created_at"]
+
+    # Variant creation/edits also cover SKU + price changes (section 53) --
+    # both are plain fields on this model, picked up by the generic diff.
+    audit_created_action = AuditLogEntry.Action.PRODUCT_CREATED
+    audit_updated_action = AuditLogEntry.Action.PRODUCT_UPDATED
+    audit_deleted_action = AuditLogEntry.Action.PRODUCT_DELETED
 
     def get_queryset(self):
         qs = ProductVariant.objects.select_related("product").prefetch_related(

@@ -100,6 +100,11 @@ def bulk_generate_units(
         items.append(LabelBatchItem(batch=batch, serialized_unit=unit))
     LabelBatchItem.objects.bulk_create(items)
 
+    from apps.accounts.audit import log_activity
+    from apps.accounts.models import AuditLogEntry
+
+    log_activity(actor=actor, action=AuditLogEntry.Action.BARCODE_GENERATED, target=batch)
+
     # Commit first, enqueue after -- never inside the atomic block.
     from ..tasks import render_label_pdf
 

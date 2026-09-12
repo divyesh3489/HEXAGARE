@@ -13,10 +13,11 @@ a losing race there just means the caller retries with the next candidate. A
 serial sequence has to be gapless-by-construction, so it does.
 
 Format: ``<HEXAGARE_SERIAL_PREFIX><variant token>-<zero-padded sequence>``
-(e.g. ``HXMP1123-000001``). Prefix and padding come from the
-``HEXAGARE_SERIAL_PREFIX`` / ``HEXAGARE_SERIAL_PADDING`` settings. The variant
-token is ``ProductVariant.code`` when set, otherwise a token derived from the
-SKU. See ``docs/serialized-units.md``.
+(e.g. ``HXMP1123-000001``). Prefix and padding come from the editable
+``apps.accounts.BusinessSettings`` singleton when set, otherwise the
+``HEXAGARE_SERIAL_PREFIX`` / ``HEXAGARE_SERIAL_PADDING`` env-backed settings
+(Phase 17). The variant token is ``ProductVariant.code`` when set, otherwise a
+token derived from the SKU. See ``docs/serialized-units.md``.
 """
 
 from __future__ import annotations
@@ -35,6 +36,17 @@ _ADVISORY_LOCK_NAMESPACE = 1001
 _NON_ALNUM = re.compile(r"[^A-Z0-9]+")
 
 
+def _business_settings():
+    """The ``BusinessSettings`` singleton, or ``None`` if its table doesn't
+    exist yet (e.g. mid-migration) -- callers fall back to Django settings."""
+    from apps.accounts.models import BusinessSettings
+
+    try:
+        return BusinessSettings.get_solo()
+    except Exception:  # noqa: BLE001 - table not migrated yet, or similar
+        return None
+
+
 def _variant_token(variant) -> str:
     """A short ``A-Z0-9`` token identifying the variant inside a serial.
 
@@ -45,7 +57,10 @@ def _variant_token(variant) -> str:
     raw = (getattr(variant, "code", "") or "").strip()
     if not raw:
         raw = (getattr(variant, "sku", "") or "").strip()
-        sku_prefix = getattr(settings, "HEXAGARE_SKU_PREFIX", "HEX")
+        business_settings = _business_settings()
+        sku_prefix = (
+            business_settings and business_settings.sku_prefix
+        ) or getattr(settings, "HEXAGARE_SKU_PREFIX", "HEX")
         if sku_prefix and raw.upper().startswith(sku_prefix.upper()):
             raw = raw[len(sku_prefix):]
     token = _NON_ALNUM.sub("", raw.upper())[:16]
@@ -53,8 +68,13 @@ def _variant_token(variant) -> str:
 
 
 def format_serial(variant, sequence: int) -> str:
-    prefix = getattr(settings, "HEXAGARE_SERIAL_PREFIX", "HX")
-    padding = getattr(settings, "HEXAGARE_SERIAL_PADDING", 6)
+    business_settings = _business_settings()
+    prefix = (business_settings and business_settings.serial_prefix) or getattr(
+        settings, "HEXAGARE_SERIAL_PREFIX", "HX"
+    )
+    padding = (business_settings and business_settings.serial_padding) or getattr(
+        settings, "HEXAGARE_SERIAL_PADDING", 6
+    )
     return f"{prefix}{_variant_token(variant)}-{sequence:0{padding}d}"
 
 
@@ -128,6 +148,11 @@ def create_unit(
         actor=actor if getattr(actor, "is_authenticated", False) else None,
     )
     InventoryService.opening(unit=unit, actor=actor)
+
+    from apps.accounts.audit import log_activity
+    from apps.accounts.models import AuditLogEntry
+
+    log_activity(actor=actor, action=AuditLogEntry.Action.SERIAL_CREATED, target=unit)
     return unit
 
 

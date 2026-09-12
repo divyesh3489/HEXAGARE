@@ -125,9 +125,11 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Settings",
     icon: Settings,
     items: [
-      { label: "General", to: "/settings", permission: "settings.manage" },
+      { label: "General", to: "/settings" },
       { label: "Users", to: "/settings/users", permission: "users.manage" },
       { label: "Roles & Permissions", to: "/settings/roles", permission: "users.manage" },
+      { label: "Activity Log", to: "/settings/activity", permission: "audit.view" },
+      { label: "Backups", to: "/settings/backups", permission: "settings.manage" },
     ],
   },
 ];

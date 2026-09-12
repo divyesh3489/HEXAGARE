@@ -54,9 +54,20 @@ def _variant_token(*, variant_code, product, attribute_values) -> str:
     return ""
 
 
+def _sku_prefix() -> str:
+    from apps.accounts.models import BusinessSettings
+
+    try:
+        business_settings = BusinessSettings.get_solo()
+    except Exception:  # noqa: BLE001 - table not migrated yet
+        business_settings = None
+    return (business_settings and business_settings.sku_prefix) or getattr(
+        settings, "HEXAGARE_SKU_PREFIX", "HEX"
+    )
+
+
 def _stem(category, variant_token: str) -> str:
-    prefix = getattr(settings, "HEXAGARE_SKU_PREFIX", "HEX")
-    parts = [_token(prefix) or "HEX"]
+    parts = [_token(_sku_prefix()) or "HEX"]
     cat = _category_token(category)
     if cat:
         parts.append(cat)

@@ -210,7 +210,87 @@ follow-up work).
 
 ## Current Phase
 
-**Status:** Phase 16 done — Dashboard (`HEXAGARE_FEATURES.md` §3, ADR-019 — placement in
+**Status:** Phase 17 done — Settings + Security/Audit Polish (`HEXAGARE_FEATURES.md` §49-54,
+ADR-020 — the whole Administration surface lives in `apps.accounts`, not a new app, since every
+permission it needs was already reserved there since Phase 1). New models on `apps.accounts`
+(migration `0002_backupjob_businesssettings_auditlogentry`): **`BusinessSettings`** (`pk=1`
+singleton, `get_solo()`, bootstrapped via `post_migrate` like `Location`/`SalesChannel`) carries
+business info, tax defaults, and blank-by-default *override* fields for
+`sku_prefix`/`serial_prefix`/`serial_padding`/`invoice_prefix`/`invoice_padding` —
+`apps.products.services.{serial_numbers,sku}` and `apps.billing.services.numbering` now call
+`BusinessSettings.get_solo()` first and fall back to the existing `HEXAGARE_*` env-backed settings
+unchanged when a field is blank, so every `@override_settings(HEXAGARE_SKU_PREFIX=...)`-style test
+keeps passing untouched. **`AuditLogEntry`** (one generic-FK model, not a table per domain) covers
+every HEXAGARE_FEATURES.md §53 action family via a fixed `Action` choices field; written through
+exactly two hook shapes (`apps/accounts/audit.py`), per the build prompt's own instruction to "hook
+into the exception handler / service layer rather than scattering log calls per view":
+`AuditMixin` (added to `ProductViewSet`/`ProductVariantViewSet`/`LocationViewSet`/`ExpenseViewSet`
+— logs create/update/delete automatically with a generic before/after field diff on update) and
+`log_activity()` called directly from the one service method that already owns a non-CRUD
+mutation — `SerializedInventoryService._apply` (the single shared engine behind every unit status
+transition: reserve/release/transfer/sell/return/damage/lose/restore/cancel, one call site covers
+all of them), `InventoryService.adjust` (manual stock corrections), `CompleteSaleService.complete`/
+`record_payment` (payments + invoice creation), `ReturnService.create`, and the
+`SaleViewSet`/`PurchaseOrderViewSet` create/cancel/payments actions. **`BackupJob`**
+(PENDING→RUNNING→SUCCESS/FAILED, same shape as `ReportExport`/`LabelBatch`) is written by
+`apps.accounts.tasks.run_database_backup`, a `pg_dump -Fc --no-owner --no-privileges` wrapper run
+via Celery (never inline on the trigger request) — this needed **`postgresql-client-17` added to
+the backend/celery-worker/celery-beat image** (`backend/hexagare/Dockerfile`; the base
+`python:3.12-slim` image is Debian trixie, which already carries a matching `postgresql-client-17`
+package natively, no PGDG repo needed), version-matched to the `postgres:17` compose service since
+an older `pg_dump` isn't guaranteed to cleanly dump a newer server. Restore and scheduled/automatic
+backups are explicitly out of scope this phase. API under `/api/v1/auth/`: `settings/` (GET any
+authenticated user, PATCH `settings.manage`), `users/` (full CRUD except hard delete —
+`deactivate/`/`reactivate/` toggle `is_active` instead — `users.manage`), `roles/` (read-only
+role→permission matrix, `users.manage`), `audit-log/` (read-only, filterable by
+`action`/`actor`/`object_type`/`date_from`/`date_to`, `audit.view`), `backups/` (create + list +
+retrieve + `{id}/download/`, `settings.manage`) — **no new RBAC codenames**
+(`settings.manage`/`users.manage`/`audit.view` were all reserved since Phase 1). Frontend: new
+`frontend/src/features/settings/` — `GeneralSettingsPage` (read-only view + gated edit form),
+`UsersPage` (list + inline create + inline role reassignment + deactivate/reactivate),
+`RolesPage` (read-only role×permission matrix), `AuditLogPage` (filterable activity table),
+`BackupsPage` (trigger + history + download, polls while a job is PENDING/RUNNING) — replacing the
+three Phase 0 stub routes at `/settings`, `/settings/users`, `/settings/roles`, plus two new
+routes/nav entries (`/settings/activity`, `/settings/backups`) under the existing Settings nav
+group. Verified: `ruff check` clean; full `manage.py test` (429 tests, 28 new —
+`apps/accounts/tests/test_administration.py`, covering the Administration surface itself
+end-to-end — settings GET/PATCH/RBAC/singleton/audit-diff, user create/update/deactivate/
+reactivate/RBAC/filtering, the roles matrix, audit-log list/filter/read-only, backup
+trigger/history/download/failure-path — plus cross-app spot-checks confirming the log_activity
+hooks actually fire: Location create/update/delete, a manual stock adjustment, order created/
+cancelled, checkout payment+invoice creation, a return, a full purchase-order lifecycle
+(create/payment/cancel), and expense create/update/delete) clean; `python manage.py spectacular
+--fail-on-warn` surfaced only the same pre-existing 5 path-param warnings from earlier phases
+(Phase 8 note 69's class), nothing new. `eslint` and `tsc -b && vite build` both clean. **Two real
+bugs caught and fixed during this phase's own test-writing and live verification, not pre-existing:**
+(1) `UserAdminCreateSerializer.role` wasn't `write_only` — creating a user crashed with
+`AttributeError: 'User' object has no attribute 'role'` because DRF tried to read `.role` back off
+the saved `User` for the 201 response (a `ChoiceField` with no `source=`/`write_only` and
+`required=True` doesn't silently skip on a missing attribute the way a `required=False` field
+does); fixed by marking `role` `write_only=True` and adding a read-only `id` field to the same
+serializer so the create response is actually useful. (2) `BusinessSettingsView.perform_update`'s
+audit diff included `updated_at`/`updated_by` on *every* save (they always differ), so every
+"Settings updated" log entry carried a meaningless timestamp/actor diff alongside the real one —
+excluded both from the diff. **Verified live** via the Claude-in-Chrome MCP against the running
+dev stack (after rebuilding + `--force-recreate`-ing `backend`/`celery-worker`/`celery-beat` for the
+new `postgresql-client-17` layer): edited Business Settings twice as Admin and confirmed the
+Activity Log rendered a clean field-level diff each time (catching bug (2) above live); inline-
+edited a user's role in the Users list; confirmed the Roles & Permissions matrix matches
+`rbac.py` exactly; triggered two real manual backups (real `pg_dump` against the live dev
+Postgres, not mocked) and downloaded one successfully; confirmed a Cashier login sees read-only
+Business Settings (no Edit button) and a clean "Couldn't load ..." message on Users/Roles/Activity
+Log/Backups, matching every prior phase's degraded-access pattern (the Phase 13-noted nav-filtering
+gap means Cashier still *sees* these sidebar entries, unchanged, out of scope here too) — no
+console errors beyond the pre-existing React Router future-flag warning. **One environment
+observation, not a code bug:** `BackupsPage`'s poll-while-pending (`useBackups`'s `refetchInterval`,
+the same pattern already relied on by `useReportExportStatus`/label-batches) never visibly re-fired
+inside the automated Chrome tab even though the triggered Celery task completed in well under a
+second server-side and a fresh page reload immediately rendered the correct final SUCCESS status —
+this tab also produced repeated CDP "renderer may be frozen or unresponsive" screenshot timeouts
+throughout the session, consistent with Chrome's background/inactive-tab timer throttling rather
+than a regression in the polling code itself.
+
+Previously: Phase 16 done — Dashboard (`HEXAGARE_FEATURES.md` §3, ADR-019 — placement in
 `apps/reports` rather than a new `apps/dashboard` app, and per-group RBAC reusing each domain's
 existing view permission rather than a new `dashboard` codename). New `apps/reports/dashboard.py`
 (`DashboardService`, four static methods, no persistence of its own) behind a new `DashboardViewSet`
@@ -611,16 +691,62 @@ server — uploaded a 2-row demo CSV (one importable, one bad-SKU row), watched 
 PENDING→PARTIAL with the bad row surfaced in `error_log`; created/activated/deleted a SKU mapping;
 created a category-scoped fixed-amount fee rule and confirmed it listed correctly.
 
-**Next up:** Phase 17 — Settings + Security/Audit Polish (see `HEXAGARE_BUILD_PROMPTS.md`).
-**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12, Phase 13, Phase 14, Phase 15, Phase 16.
-**Doc-hygiene note (caught this phase, not a Phase 16 deviation):** these two lines had been left
+**Next up:** Phase 18 — AWS Deployment (see `HEXAGARE_BUILD_PROMPTS.md`).
+**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12, Phase 13, Phase 14, Phase 15, Phase 16, Phase 17.
+**Notes / deviations from the plan:** Phase 17: (125) **No new RBAC codenames** — unlike every
+prior phase introducing a new resource, `settings.manage`/`users.manage`/`audit.view` were all
+three already reserved since Phase 1, confirmed by grepping `rbac.py` before writing any code.
+(126) **`BusinessSettings` fields are *overrides*, not the settings themselves** — a blank
+`sku_prefix`/`serial_prefix`/`serial_padding`/`invoice_prefix`/`invoice_padding` means "keep using
+the env-backed `HEXAGARE_*` Django setting," never a hardcoded fallback string baked into the
+service layer; this was a deliberate design choice (not spelled out in HEXAGARE_FEATURES.md §49-52)
+so the existing `@override_settings(HEXAGARE_SKU_PREFIX=...)`-style tests across `apps.products`/
+`apps.billing` keep working against a fresh, all-blank `BusinessSettings` row without any test
+changes. (127) **A single `AuditLogEntry.Action` value sometimes covers several §53 list items** —
+e.g. "Variant modification"/"SKU modification"/"Price changes" all collapse onto `product.updated`
+since they're the same underlying model's field diff, distinguished by *which* field changed in
+`changes`, not by a separate action code per phrase in the feature list; see ADR-020 point 2 for
+the full reasoning. (128) **"Invoice modification"/"Invoice cancellation" (also listed in §53) are
+not wired up** — no such feature exists anywhere in the app (an `Invoice` is an immutable
+point-in-time snapshot once created, per its own Phase 8 docstring, and a `COMPLETED` sale — the
+only kind with an invoice — can't be cancelled); this is a pre-existing gap in the domain model, not
+something this phase should invent a mutation path for just to have something to log. (129) **The
+backend image needed a real dependency add** (`postgresql-client-17`, `backend/hexagare/Dockerfile`)
+for the manual-backup feature to actually function — caught by testing `pg_dump --version` inside
+the container before writing the Celery task, not after; the base `python:3.12-slim` image turned
+out to already be Debian trixie (not bookworm), which ships a version-matched `postgresql-client-17`
+natively, so no PGDG apt repo was needed (an earlier attempt to add one failed on a
+trixie-vs-bookworm package-dependency conflict, reverted in favor of the simpler one-line fix).
+(130) 401→429 backend tests (28 new, `apps/accounts/tests/test_administration.py` — see the Status
+section above for the full breakdown). `ruff check` clean; `python manage.py spectacular
+--fail-on-warn` surfaced no new warnings, only the same 5 pre-existing path-param ones (Phase 8 note
+69's class). (131) **Two real bugs were caught and fixed this phase** (not pre-existing) — see the
+Status section above for both: `UserAdminCreateSerializer.role` needed `write_only=True` (a
+required, non-`write_only` `ChoiceField` with no matching model attribute crashes DRF's response
+serialization rather than silently skipping, unlike a `required=False` field), and
+`BusinessSettingsView.perform_update`'s audit diff needed `updated_at`/`updated_by` excluded (both
+always differ on every save, so every settings-update log entry carried a meaningless diff line
+alongside the real one). (132) **Chrome DevTools MCP not connected** — verified live via the
+Claude-in-Chrome MCP instead: two full edit→save→diff round trips on Business Settings (the second
+confirming bug (131)'s fix), an inline user role change, the Roles & Permissions matrix compared
+directly against `rbac.py`, two real (unmocked) `pg_dump` backups triggered and one downloaded
+successfully, and a full Cashier-login degraded-access pass across all five new pages. (133) **One
+environment-only observation, not a regression:** `BackupsPage`'s pending-job poll
+(`useBackups`'s `refetchInterval`) never visibly re-fired inside the automated browser tab despite
+the underlying task finishing in under a second server-side (confirmed via the Celery worker log
+and a fresh page reload showing the correct final status immediately) — the same tab produced
+repeated CDP screenshot-timeout warnings throughout the session, pointing at Chrome's
+background-tab timer throttling in this specific automation environment rather than a bug in the
+polling code, which is the same `refetchInterval` pattern already relied on (and previously
+verified working) by `useReportExportStatus`/the label-batches list.
+**Doc-hygiene note (Phase 16, retained for history):** these two lines had been left
 stale at "Next up: Phase 14 / Completed: ...Phase 13" since before Phase 14 started — Phase 14 and
 15 both finished (see their **Status**/**Previously** write-ups above) without updating them. Fixed
 here; `docs/domain-model.md`'s "Reports / Notifications" section had the same staleness (still read
 "Not yet built (later phases). Scaffold apps only." after both shipped) and was filled in for real
 in the same pass — see the new "Reports / Exports", "Dashboard widgets" and "Notifications"
 sections there.
-**Notes / deviations from the plan:** Phase 13: (118) **No new RBAC codename was added** — unlike
+Phase 13: (118) **No new RBAC codename was added** — unlike
 every prior phase that introduced a new resource, `expenses.manage`/`finance.view` were already
 both reserved since Phase 1, and (per ADR-018) `expenses.manage` alone gates the whole `Expense`
 resource including reads, matching how `nav.ts` had already gated the Expenses link before this

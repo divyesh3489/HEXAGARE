@@ -1159,3 +1159,90 @@ placeholder directly rather than importing from `features/`, the one route
 that didn't follow the rest of `router.tsx`'s `@/features/...` import
 convention; removed in favor of importing `DashboardPage` from
 `@/features/dashboard` like every other page).
+
+---
+
+## ADR-020 — Administration (settings/users/roles/audit log/backups) lives
+in `apps.accounts`, one generic `AuditLogEntry` model with two logging hook
+shapes instead of a per-view logging call
+
+**Status:** Accepted (Phase 17)
+
+**Context.** HEXAGARE_FEATURES.md §49-54 asks for a settings surface
+(business info, tax defaults, serial/barcode numbering), full user/role
+management, an activity/audit log covering every business action listed in
+§53, and manual database backups + history. None of these map onto an
+existing domain app, and CLAUDE.md's fixed app list has no `settings`,
+`audit`, or `backups` entry. §53's own permission vocabulary
+(`settings.manage`/`users.manage`/`audit.view`) was already reserved in
+`rbac.py` since Phase 1 and points at `apps.accounts` — the app that already
+owns `User`, `LoginHistory`, and the RBAC machinery every other app's
+permission checks depend on.
+
+**Decision.**
+1. **`BusinessSettings`, `AuditLogEntry`, and `BackupJob` are added to
+   `apps.accounts`**, not a new app — they are the rest of the
+   "Administration" surface Phase 1's `LoginHistory` and RBAC groundwork was
+   already heading toward, and every one of them is gated by a permission
+   `apps.accounts.rbac` already owns. `BusinessSettings` is a `pk=1`
+   singleton (`get_solo()`), same bootstrap-on-`post_migrate` pattern as
+   `inventory.Location`/`sales.SalesChannel`; its `sku_prefix`/
+   `serial_prefix`/`serial_padding`/`invoice_prefix`/`invoice_padding`
+   fields are blank-by-default *overrides* — `apps.products.services.
+   {serial_numbers,sku}` and `apps.billing.services.numbering` call
+   `BusinessSettings.get_solo()` first and fall back to the existing
+   `HEXAGARE_*` env-backed Django settings unchanged when a field is blank,
+   so every `@override_settings(HEXAGARE_SKU_PREFIX=...)`-style test already
+   in the suite keeps working untouched.
+2. **One generic `AuditLogEntry` model, not a table per domain.** A
+   `content_type`/`object_id` generic FK plus a fixed `Action` choices field
+   covers every §53 action family (product/serial/barcode/stock/location/
+   invoice/order/return/purchase/payment/expense/user/settings/backup)
+   without a migration per app. A handful of closely-related §53 line items
+   collapse onto one `Action` value where the underlying model change is the
+   same field diff — e.g. "Variant modification"/"SKU modification"/"Price
+   changes" all fall under `product.updated` (the generic before/after diff
+   already distinguishes which field actually changed) — rather than
+   inventing an `Action` value per phrase in the feature list.
+3. **Two logging hook shapes, not a bespoke `AuditLogEntry.objects.create()`
+   call scattered per view** (the build prompt's own instruction: "hook into
+   the exception handler / service layer rather than scattering log calls
+   per view"). `apps.accounts.audit.AuditMixin` is added to a plain CRUD
+   `ModelViewSet` (`ProductViewSet`, `ProductVariantViewSet`,
+   `LocationViewSet`, `ExpenseViewSet`) and logs create/update/delete
+   automatically, with a generic before/after field diff on update.
+   `apps.accounts.audit.log_activity()` is called directly, once, from
+   inside the one service method that already owns a non-CRUD mutation --
+   `SerializedInventoryService._apply` (the single shared engine behind
+   every unit status transition: reserve/release/transfer/sell/return/
+   damage/lose/restore/cancel — one call site covers all of them),
+   `InventoryService.adjust` (manual stock corrections),
+   `CompleteSaleService.complete`/`record_payment` (payments + invoice
+   creation), `ReturnService.create`, and the `SaleViewSet`/
+   `PurchaseOrderViewSet` create/cancel/payments actions. This means the
+   audit log grows exactly one call site per already-existing canonical
+   mutation point, not one per HTTP action.
+4. **Manual backups only — no restore, no automatic/scheduled backups,
+   both explicitly out of scope this phase** (see the Current Phase note in
+   CLAUDE.md). `BackupJob` (PENDING → RUNNING → SUCCESS/FAILED, same shape
+   as `apps.reports.ReportExport`/`apps.products.LabelBatch`) is written by
+   `apps.accounts.tasks.run_database_backup`, a `pg_dump -Fc` wrapper run
+   via Celery (never inline on the trigger request), uploaded to the same
+   storage backend as every other generated file. This requires
+   `postgresql-client-17` in the backend/celery-worker/celery-beat image
+   (`backend/hexagare/Dockerfile`) — version-matched to the `postgres:17`
+   compose service, since `pg_dump` dumping a newer server than itself isn't
+   guaranteed to work.
+
+**Consequences.** `apps/accounts/{models,serializers,views,urls,admin,
+audit}.py` gain the Administration surface; migration
+`accounts/0002_backupjob_businesssettings_auditlogentry`. No `rbac.py`
+change (`settings.manage`/`users.manage`/`audit.view` were already
+reserved). `docs/decisions.md` (this entry) and `docs/domain-model.md`'s
+Administration section are the structural record; `docs/architecture.md`'s
+app list gains a note that `apps.accounts` now also owns Administration.
+Frontend: `frontend/src/features/settings/` (`GeneralSettingsPage`,
+`UsersPage`, `RolesPage` — read-only, `AuditLogPage`, `BackupsPage`) replaces
+the three Phase 0 stub routes at `/settings`, `/settings/users`,
+`/settings/roles`, and adds two new nav entries/routes (`/settings/activity`,
+`/settings/backups`) under the existing Settings nav group.

@@ -1,16 +1,27 @@
 from django.urls import path
+from rest_framework.routers import SimpleRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
+    AuditLogViewSet,
+    BackupViewSet,
+    BusinessSettingsView,
     LoginView,
     LogoutView,
     PasswordChangeView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
     ProfileView,
+    RolesView,
+    UserViewSet,
 )
 
 app_name = "accounts"
+
+router = SimpleRouter()
+router.register("users", UserViewSet, basename="user")
+router.register("audit-log", AuditLogViewSet, basename="audit-log")
+router.register("backups", BackupViewSet, basename="backup")
 
 urlpatterns = [
     path("login/", LoginView.as_view(), name="login"),
@@ -24,4 +35,6 @@ urlpatterns = [
         PasswordResetConfirmView.as_view(),
         name="password-reset-confirm",
     ),
-]
+    path("settings/", BusinessSettingsView.as_view(), name="settings"),
+    path("roles/", RolesView.as_view(), name="roles"),
+] + router.urls

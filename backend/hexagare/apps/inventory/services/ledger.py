@@ -152,7 +152,7 @@ class InventoryService:
     ) -> InventoryTransaction:
         """Manual, non-serialized quantity correction (permission
         ``stock_adjustments``). Same guarantees as :meth:`record`."""
-        return InventoryService.record(
+        txn = InventoryService.record(
             variant=variant,
             location=location,
             status=status,
@@ -162,6 +162,20 @@ class InventoryService:
             note=note,
             actor=actor,
         )
+
+        from apps.accounts.audit import log_activity
+        from apps.accounts.models import AuditLogEntry
+
+        log_activity(
+            actor=actor,
+            action=AuditLogEntry.Action.STOCK_CHANGED,
+            target=txn,
+            changes={
+                "quantity": {"old": None, "new": quantity},
+                "status": {"old": None, "new": status},
+            },
+        )
+        return txn
 
     @staticmethod
     @transaction.atomic

@@ -7,7 +7,9 @@ table grows. A different namespace key from the serial allocator's ``1001``
 -- see ADR-013.
 
 Format: ``<HEXAGARE_INVOICE_PREFIX>-<zero-padded sequence>`` (e.g.
-``HEX-INV-001245``, HEXAGARE_FEATURES.md section 28).
+``HEX-INV-001245``, HEXAGARE_FEATURES.md section 28). Prefix/padding come
+from the editable ``apps.accounts.BusinessSettings`` singleton when set,
+otherwise the env-backed settings (Phase 17).
 """
 
 from __future__ import annotations
@@ -21,8 +23,18 @@ _ADVISORY_LOCK_NAMESPACE = 1002
 
 
 def format_invoice_number(sequence: int) -> str:
-    prefix = getattr(settings, "HEXAGARE_INVOICE_PREFIX", "HEX-INV")
-    padding = getattr(settings, "HEXAGARE_INVOICE_PADDING", 6)
+    from apps.accounts.models import BusinessSettings
+
+    try:
+        business_settings = BusinessSettings.get_solo()
+    except Exception:  # noqa: BLE001 - table not migrated yet
+        business_settings = None
+    prefix = (business_settings and business_settings.invoice_prefix) or getattr(
+        settings, "HEXAGARE_INVOICE_PREFIX", "HEX-INV"
+    )
+    padding = (business_settings and business_settings.invoice_padding) or getattr(
+        settings, "HEXAGARE_INVOICE_PADDING", 6
+    )
     return f"{prefix}-{sequence:0{padding}d}"
 
 

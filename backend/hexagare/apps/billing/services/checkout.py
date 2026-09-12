@@ -92,8 +92,11 @@ class CompleteSaleService:
         cls._validate_unit_backed(sale)
         sale = SalesTotalsService.recalculate(sale)
 
+        from apps.accounts.audit import log_activity
+        from apps.accounts.models import AuditLogEntry
+
         for entry in payments:
-            Payment.objects.create(
+            payment = Payment.objects.create(
                 sale=sale,
                 method=entry["method"],
                 amount=entry["amount"],
@@ -101,6 +104,7 @@ class CompleteSaleService:
                 note=entry.get("note", ""),
                 created_by=actor if getattr(actor, "is_authenticated", False) else None,
             )
+            log_activity(actor=actor, action=AuditLogEntry.Action.PAYMENT_RECORDED, target=payment)
 
         amount_paid: Decimal = sale.amount_paid  # re-reads Payment rows, incl. those just created
 
@@ -130,6 +134,8 @@ class CompleteSaleService:
         sale.status = Sale.Status.COMPLETED
         sale.save(update_fields=["status", "updated_at"])
 
+        log_activity(actor=actor, action=AuditLogEntry.Action.INVOICE_CREATED, target=invoice)
+
         from ..tasks import render_invoice_pdf
 
         transaction.on_commit(lambda: render_invoice_pdf.delay(invoice.pk))
@@ -151,8 +157,11 @@ class CompleteSaleService:
         if not payments:
             raise ValidationError({"payments": "At least one payment entry is required."})
 
+        from apps.accounts.audit import log_activity
+        from apps.accounts.models import AuditLogEntry
+
         for entry in payments:
-            Payment.objects.create(
+            payment = Payment.objects.create(
                 sale=sale,
                 method=entry["method"],
                 amount=entry["amount"],
@@ -160,6 +169,7 @@ class CompleteSaleService:
                 note=entry.get("note", ""),
                 created_by=actor if getattr(actor, "is_authenticated", False) else None,
             )
+            log_activity(actor=actor, action=AuditLogEntry.Action.PAYMENT_RECORDED, target=payment)
 
         return Invoice.objects.get(sale=sale)
 

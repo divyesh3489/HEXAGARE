@@ -24,6 +24,8 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.audit import AuditMixin
+from apps.accounts.models import AuditLogEntry
 from apps.accounts.permissions import require
 from apps.products.models import SerializedUnit
 from apps.products.services.serialized_inventory import SerializedInventoryService
@@ -60,13 +62,17 @@ def _truthy(value: str) -> bool:
     return value.lower() in {"1", "true", "yes"}
 
 
-class LocationViewSet(viewsets.ModelViewSet):
+class LocationViewSet(AuditMixin, viewsets.ModelViewSet):
     """List / retrieve / create / update / delete stock locations."""
 
     serializer_class = LocationSerializer
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["name", "code"]
     ordering_fields = ["name", "created_at"]
+
+    audit_created_action = AuditLogEntry.Action.LOCATION_CREATED
+    audit_updated_action = AuditLogEntry.Action.LOCATION_UPDATED
+    audit_deleted_action = AuditLogEntry.Action.LOCATION_DELETED
 
     def get_permissions(self):
         codename = _VIEW if self.action in _READ_ACTIONS else _ADJUST
@@ -97,6 +103,8 @@ class LocationViewSet(viewsets.ModelViewSet):
                 "This location still holds stock or unit history and cannot be deleted. "
                 "Deactivate it instead."
             )
+        # Resolves to AuditMixin.perform_destroy next in the MRO, which logs
+        # audit_deleted_action after the actual delete.
         super().perform_destroy(instance)
 
 

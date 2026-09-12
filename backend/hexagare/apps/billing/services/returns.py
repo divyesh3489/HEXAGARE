@@ -156,6 +156,11 @@ class ReturnService:
             note=reason,
             created_by=actor,
         )
+
+        from apps.accounts.audit import log_activity
+        from apps.accounts.models import AuditLogEntry
+
+        log_activity(actor=actor, action=AuditLogEntry.Action.RETURN_CREATED, target=return_obj)
         return return_obj
 
     @staticmethod

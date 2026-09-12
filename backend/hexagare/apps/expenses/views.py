@@ -20,6 +20,8 @@ from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
+from apps.accounts.audit import AuditMixin
+from apps.accounts.models import AuditLogEntry
 from apps.accounts.permissions import require
 from apps.products.models import SerializedUnit
 from apps.sales.models import SalesChannel
@@ -37,12 +39,15 @@ _MANAGE = "expenses.manage"
 _FINANCE_VIEW = "finance.view"
 
 
-class ExpenseViewSet(viewsets.ModelViewSet):
+class ExpenseViewSet(AuditMixin, viewsets.ModelViewSet):
     queryset = Expense.objects.select_related("sales_channel", "created_by").all()
     serializer_class = ExpenseSerializer
     permission_classes = [require(_MANAGE)]
     filter_backends = [OrderingFilter]
     ordering_fields = ["expense_date", "amount", "created_at"]
+
+    audit_updated_action = AuditLogEntry.Action.EXPENSE_UPDATED
+    audit_deleted_action = AuditLogEntry.Action.EXPENSE_DELETED
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -58,7 +63,17 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
+        # Not AuditMixin's default perform_create -- this save needs the
+        # extra created_by kwarg, so the log call is made directly here.
         serializer.save(created_by=self.request.user)
+        from apps.accounts.audit import log_activity
+
+        log_activity(
+            actor=self._actor(),
+            action=AuditLogEntry.Action.EXPENSE_CREATED,
+            target=serializer.instance,
+            ip_address=self._ip(),
+        )
 
 
 def _resolve_channel(code: str | None) -> SalesChannel | None:

@@ -818,3 +818,59 @@ enqueues the task via `transaction.on_commit`.
 
 Frontend: `InvoiceDetailPage` gained a "Send invoice" card (channel select + recipient + Send) and
 renders `invoice.deliveries` with a status badge per row.
+
+## Administration (`apps/accounts`, Phase 17, ADR-020)
+
+Settings/users/roles/audit-log/backups all live in `apps.accounts`, not a new app — see ADR-020
+for why. No new RBAC codenames (`settings.manage`/`users.manage`/`audit.view` were reserved since
+Phase 1).
+
+### Models (`apps/accounts/models.py`)
+
+- **`BusinessSettings`** — `pk=1` singleton (`get_solo()`, bootstrapped via `post_migrate` like
+  `Location`/`SalesChannel`). Business info (name/address/phone/email/gstin/logo), tax defaults
+  (`currency`, `default_tax_rate`), and blank-by-default *override* fields for
+  `sku_prefix`/`serial_prefix`/`serial_padding`/`invoice_prefix`/`invoice_padding` — consulted by
+  `apps.products.services.{serial_numbers,sku}` and `apps.billing.services.numbering` before
+  falling back to the `HEXAGARE_*` env-backed Django settings unchanged.
+- **`AuditLogEntry`** — one generic-FK (`content_type`/`object_id`) model covering every
+  HEXAGARE_FEATURES.md §53 action family via a fixed `Action` choices field (`product.created`,
+  `serial.created`, `stock.changed`, `status.changed`, `location.*`, `invoice.created`,
+  `order.created`/`.cancelled`, `return.created`, `purchase.created`/`.cancelled`,
+  `payment.recorded`, `expense.*`, `user.*`, `settings.updated`, `backup.triggered`). Carries
+  `actor`, `changes` (`{field: {old, new}}` for updates), `ip_address`, `created_at`.
+- **`BackupJob`** — `PENDING → RUNNING → SUCCESS/FAILED`, same shape as `ReportExport`/
+  `LabelBatch`. `file`/`file_size`/`error_message`/`triggered_by`/`started_at`/`finished_at`.
+
+### Logging (`apps/accounts/audit.py`)
+
+Two hook shapes, not a call per view (per the build prompt): `AuditMixin` (add to a plain CRUD
+`ModelViewSet` — `ProductViewSet`, `ProductVariantViewSet`, `LocationViewSet`, `ExpenseViewSet` —
+logs create/update/delete automatically with a generic before/after diff on update) and
+`log_activity()` (called directly from the one service method that already owns a non-CRUD
+mutation: `SerializedInventoryService._apply` for every unit status transition,
+`InventoryService.adjust` for manual stock corrections, `CompleteSaleService.complete`/
+`record_payment` for payments + invoice creation, `ReturnService.create`, and the
+`SaleViewSet`/`PurchaseOrderViewSet` create/cancel/payments actions). Never raises — a logging
+failure never breaks the business action it describes.
+
+### Backups (`apps/accounts/tasks.py:run_database_backup`)
+
+`pg_dump -Fc --no-owner --no-privileges` against `settings.DATABASES["default"]`, run via Celery
+(never inline on the trigger request), uploaded to the same storage backend as every other
+generated file. Requires `postgresql-client-17` in the backend/celery-worker/celery-beat image,
+version-matched to the `postgres:17` compose service (see `backend/hexagare/Dockerfile`). Restore
+and scheduled/automatic backups are explicitly out of scope this phase.
+
+### API (`/api/v1/auth/`)
+
+`settings/` (GET any authenticated user, PATCH `settings.manage`) · `users/` (full CRUD except hard
+delete — `deactivate/`/`reactivate/` toggle `is_active` instead — `users.manage`) · `roles/`
+(read-only role → permission matrix, `users.manage`) · `audit-log/` (read-only, filterable by
+`action`/`actor`/`object_type`/`date_from`/`date_to`, `audit.view`) · `backups/` (create + list +
+retrieve + `{id}/download/`, `settings.manage`).
+
+Frontend: `frontend/src/features/settings/` — `GeneralSettingsPage`, `UsersPage`, `RolesPage`
+(read-only matrix), `AuditLogPage`, `BackupsPage` — replacing the three Phase 0 stub routes at
+`/settings`, `/settings/users`, `/settings/roles`, plus two new routes/nav entries
+(`/settings/activity`, `/settings/backups`).

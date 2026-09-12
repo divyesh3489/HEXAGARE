@@ -20,7 +20,9 @@ backend/hexagare/
     celery.py        Celery app, autodiscovers apps/<app>/tasks.py
   apps/
     common/          cross-cutting: exception envelope, pagination, binary renderer, health
-    accounts/        auth + RBAC                         (Phase 1)
+    accounts/        auth + RBAC                         (Phase 1);
+                     settings/users/roles/audit-log/backups (Administration,
+                     Phase 17, ADR-020)
     products/        catalog (Category / Product / ProductVariant / attributes /
                      images / LabelSize + SKU service)   (Phase 2);
                      serialized units + on-demand barcode + scan lookup   (Phase 3)

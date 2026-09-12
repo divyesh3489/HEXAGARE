@@ -83,6 +83,20 @@ class SerializedInventoryService:
             note=note,
             actor=actor,
         )
+
+        from apps.accounts.audit import log_activity
+        from apps.accounts.models import AuditLogEntry
+
+        changes = {"status": {"old": from_status, "new": unit.status}}
+        if from_location_id := getattr(from_location, "pk", None):
+            if from_location_id != unit.location_id:
+                changes["location"] = {"old": str(from_location), "new": str(unit.location)}
+        log_activity(
+            actor=actor,
+            action=AuditLogEntry.Action.STATUS_CHANGED,
+            target=unit,
+            changes=changes,
+        )
         return unit
 
     # -- reservation (Phase 7 / 8) -------------------------------------

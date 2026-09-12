@@ -33,6 +33,13 @@ import {
 import { ReportsPage } from "@/features/reports";
 import { NewReturnPage, ReturnDetailPage, ReturnsPage } from "@/features/returns";
 import { NewBillPage, OrdersPage } from "@/features/sales";
+import {
+  AuditLogPage,
+  BackupsPage,
+  GeneralSettingsPage,
+  RolesPage,
+  UsersPage,
+} from "@/features/settings";
 import { SerializedUnitDetailPage, SerializedUnitsPanel } from "@/features/serialized-units";
 import { SupplierDetailPage, SuppliersPage } from "@/features/suppliers";
 import { LoginPage } from "./login";
@@ -75,9 +82,6 @@ const scannerFallback = (
 const stubRoutes: { path: string; title: string; phase: string }[] = [
   { path: "finance/payments", title: "Payments", phase: "Phase 8" },
   { path: "notifications", title: "Notifications", phase: "Phase 15" },
-  { path: "settings", title: "General Settings", phase: "Phase 17" },
-  { path: "settings/users", title: "Users", phase: "Phase 17" },
-  { path: "settings/roles", title: "Roles & Permissions", phase: "Phase 17" },
 ];
 
 export const router = createBrowserRouter([
@@ -121,6 +125,11 @@ export const router = createBrowserRouter([
           { path: "purchases/orders/:orderId", element: <PurchaseOrderDetailPage /> },
           { path: "purchases/receive", element: <ReceiveStockPage /> },
           { path: "reports", element: <ReportsPage /> },
+          { path: "settings", element: <GeneralSettingsPage /> },
+          { path: "settings/users", element: <UsersPage /> },
+          { path: "settings/roles", element: <RolesPage /> },
+          { path: "settings/activity", element: <AuditLogPage /> },
+          { path: "settings/backups", element: <BackupsPage /> },
           {
             path: "barcode/scan",
             element: (

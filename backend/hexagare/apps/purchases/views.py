@@ -19,6 +19,8 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from apps.accounts.audit import log_activity
+from apps.accounts.models import AuditLogEntry
 from apps.accounts.permissions import require
 
 from .models import PurchaseOrder, PurchaseOrderLine
@@ -87,6 +89,9 @@ class PurchaseOrderViewSet(
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         purchase_order = serializer.save()
+        log_activity(
+            actor=request.user, action=AuditLogEntry.Action.PURCHASE_CREATED, target=purchase_order
+        )
         return self._detail_response(purchase_order, status_code=201)
 
     def _editable_order(self, pk) -> PurchaseOrder:
@@ -165,6 +170,9 @@ class PurchaseOrderViewSet(
             purchase_order=purchase_order,
             created_by=actor if getattr(actor, "is_authenticated", False) else None,
         )
+        log_activity(
+            actor=actor, action=AuditLogEntry.Action.PAYMENT_RECORDED, target=serializer.instance
+        )
         return self._detail_response(purchase_order)
 
     @extend_schema(request=None, responses=PurchaseOrderDetailSerializer)
@@ -177,4 +185,9 @@ class PurchaseOrderViewSet(
             )
         purchase_order.status = PurchaseOrder.Status.CANCELLED
         purchase_order.save(update_fields=["status", "updated_at"])
+        log_activity(
+            actor=request.user,
+            action=AuditLogEntry.Action.PURCHASE_CANCELLED,
+            target=purchase_order,
+        )
         return self._detail_response(purchase_order)
