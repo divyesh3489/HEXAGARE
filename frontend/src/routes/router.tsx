@@ -12,6 +12,8 @@ import {
   LabelBatchesPage,
 } from "@/features/bulk-generate";
 import { CustomerDetailPage, CustomersPage } from "@/features/customers";
+import { ExpensesPage } from "@/features/expenses";
+import { ProfitSummaryPage } from "@/features/finance";
 import {
   InventoryAlertsPage,
   InventoryOverviewPage,
@@ -71,8 +73,6 @@ const scannerFallback = (
 
 const stubRoutes: { path: string; title: string; phase: string }[] = [
   { path: "finance/payments", title: "Payments", phase: "Phase 8" },
-  { path: "finance/expenses", title: "Expenses", phase: "Phase 13" },
-  { path: "finance/profit", title: "Profit", phase: "Phase 13" },
   { path: "reports", title: "Reports", phase: "Phase 14" },
   { path: "notifications", title: "Notifications", phase: "Phase 15" },
   { path: "settings", title: "General Settings", phase: "Phase 17" },
@@ -112,6 +112,8 @@ export const router = createBrowserRouter([
           { path: "sales/returns/:returnId", element: <ReturnDetailPage /> },
           { path: "customers", element: <CustomersPage /> },
           { path: "customers/:customerId", element: <CustomerDetailPage /> },
+          { path: "finance/expenses", element: <ExpensesPage /> },
+          { path: "finance/profit", element: <ProfitSummaryPage /> },
           { path: "purchases/suppliers", element: <SuppliersPage /> },
           { path: "purchases/suppliers/:supplierId", element: <SupplierDetailPage /> },
           { path: "purchases/orders", element: <PurchaseOrdersPage /> },

@@ -21,6 +21,7 @@ from django.db import transaction
 
 from apps.accounts.rbac import ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_WAREHOUSE
 from apps.customers.models import Customer
+from apps.expenses.models import Expense
 from apps.integrations.amazon.models import AmazonFeeConfig, AmazonSkuMapping
 from apps.inventory.models import Location, StockLevelPolicy
 from apps.inventory.services.ledger import InventoryService
@@ -253,6 +254,7 @@ class Command(BaseCommand):
         sales = self._seed_sales()
         amazon = self._seed_amazon_integration()
         purchases = self._seed_suppliers_and_purchases()
+        expenses = self._seed_expenses()
 
         self.stdout.write(self.style.SUCCESS("Demo data ready:"))
         rows = [
@@ -267,6 +269,7 @@ class Command(BaseCommand):
             ("sales", sales),
             ("amazon integration", amazon),
             ("suppliers/purchases", purchases),
+            ("expenses", expenses),
         ]
         for label, counts in rows:
             self.stdout.write(
@@ -528,3 +531,34 @@ class Command(BaseCommand):
                 order, receipts=[{"line": line, "quantity": 15, "location": warehouse}]
             )
         return result
+
+    def _seed_expenses(self) -> dict:
+        """A handful of demo expenses spanning categories/channels/dates, so
+        the Profit summary page has something to show out of the box."""
+        offline = SalesChannel.objects.filter(code="OFFLINE").first()
+        amazon = SalesChannel.objects.filter(code="AMAZON").first()
+        created = existing = 0
+        for category, channel, amount, expense_date, note in [
+            (Expense.Category.PACKAGING, None, "500.00", "2026-01-05", "Bubble wrap + boxes"),
+            (Expense.Category.COURIER, offline, "300.00", "2026-01-08", "Local delivery runs"),
+            (Expense.Category.ADVERTISING, amazon, "1200.00", "2026-01-10", "Sponsored ads"),
+            (
+                Expense.Category.AMAZON_FEES,
+                amazon,
+                "200.00",
+                "2026-01-15",
+                "Monthly fee reconciliation adjustment",
+            ),
+        ]:
+            _, was_created = Expense.objects.get_or_create(
+                category=category,
+                note=note,
+                defaults={
+                    "sales_channel": channel,
+                    "amount": Decimal(amount),
+                    "expense_date": expense_date,
+                },
+            )
+            created += was_created
+            existing += not was_created
+        return {"created": created, "existing": existing}

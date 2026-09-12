@@ -9,6 +9,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 
+from apps.expenses.models import Expense
 from apps.products.models import (
     Category,
     Product,
@@ -77,6 +78,8 @@ class SeedDemoDataTests(TestCase):
         # No duplicate group memberships.
         admin = User.objects.get(email="admin@hexagare.test")
         self.assertEqual(admin.groups.filter(name="Admin").count(), 1)
+        # Expenses are matched on (category, note) -- not duplicated on rerun.
+        self.assertEqual(Expense.objects.count(), 4)
 
     def test_custom_password(self):
         _run(password="sw0rdfish-XYZ")
