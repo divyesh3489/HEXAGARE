@@ -210,7 +210,71 @@ follow-up work).
 
 ## Current Phase
 
-**Status:** Phase 12 done — Purchases + Suppliers (ADR-017, `HEXAGARE_FEATURES.md` §32, §33). New
+**Status:** Phase 13 done — Expenses + Profit/Finance (ADR-018, `HEXAGARE_FEATURES.md` §35-37).
+New **`Expense`** model in `apps/expenses` (real implementation replacing the scaffold) —
+`category` (fixed `TextChoices`: Amazon fees/Shipping/Courier/Packaging/Advertising/
+Manufacturing/Raw materials/Offline expenses/Other expenses — a closed taxonomy, not a separate
+model), `sales_channel` (optional FK, blank = general/business-wide), `amount`, `expense_date`,
+`note`, `created_by`. **`FinanceService`** (`apps/expenses/services.py`) is a read-only
+aggregation — same Python-loop style as `apps.customers.services`/`apps.suppliers.services`, no
+cached columns: `summary(date_from, date_to, channel=None)` walks qualifying `Sale`s (excludes
+`DRAFT`/`CANCELLED`) in the range, reuses `Sale.subtotal`/`tax_total`/`discount_total`/
+`grand_total` for taxable/gross sales, GST and discounts; sums each sold unit's
+`SerializedUnit.purchase_cost` (Phase 12, falling back to `variant.effective_purchase_price` for a
+unit that predates per-unit cost tracking) for product cost; folds `AmazonOrderSettlement` (Phase
+9) fee columns *and* matching `Expense` categories into `packaging`/`shipping`/`advertising`/
+`amazon_fees`/`other_expenses` buckets (either can be the source of a given cost — an automatic
+per-order Amazon figure, or a manually logged lump-sum expense); reports `Return.refund_total`
+separately. `gross_profit = taxable_sales − product_cost`; `net_profit = gross_profit −
+packaging − shipping − amazon_fees − advertising − other_expenses` — GST/discounts/refunds are
+informational, not subtracted again in the waterfall (§36's diagram already starts from
+post-discount revenue). `by_channel(date_from, date_to)` is the same summary per active
+`SalesChannel`. `unit_profit(unit)` (§37) apportions a sale line's `taxable_value` — and, for an
+Amazon order, its settlement's fee columns — evenly across the line's bound units, same even-split
+reasoning `ReturnService` uses for refund amounts. API: **`/api/v1/expenses/`** (standard CRUD,
+every action gated `expenses.manage` — no separate `.view` codename exists for this resource) and
+**`/api/v1/expenses/finance/`** — `summary/?date_from=&date_to=&channel=`, `by-channel/`, and
+`units/{unit_id}/profit/` (all `finance.view`; both codenames reserved since Phase 1, held by
+Admin/Manager only). Frontend: new `frontend/src/features/expenses/` (`ExpensesPage` — list +
+inline create/edit, filterable by category/channel/date range) and `frontend/src/features/
+finance/` (`ProfitSummaryPage` — date-range picker, summary tiles for every §36 report line, a
+by-channel breakdown table); a "Profit (this sale)" card was added to
+`SerializedUnitDetailPage`, shown only for a `SOLD`/`RETURNED` unit and gated on `finance.view` —
+replacing the Phase 0 stub routes at `/finance/expenses` and `/finance/profit` (nav entries already
+existed, gated on `expenses.manage`/`finance.view` respectively, unchanged). `seed_demo_data`
+gains four demo `Expense` rows spanning categories/channels/dates. Verified: `ruff check` + full
+`manage.py test` (349 tests, 24 new) clean; `eslint` + `tsc -b && vite build` clean; a full Chrome
+pass via the Claude-in-Chrome MCP on the live dev server — created and deleted an expense from the
+Expenses page, confirmed the Profit summary page's tiles and by-channel table match a by-hand
+recomputation from the seeded data across two date ranges, confirmed the "Profit (this sale)" card
+renders correct figures on a sold unit's detail page, and confirmed a Cashier login (no
+`finance.view`/`expenses.manage`) gets a clean "Couldn't load expenses" error on direct navigation
+and no Profit card on the unit page — same degraded-access pattern as every prior phase, matching
+the automated RBAC tests. No console errors beyond the pre-existing React Router future-flag
+warning.
+
+**Bug caught and fixed live (this phase):** `ProfitSummaryPage`'s default date range used
+`new Date(...).toISOString().slice(0, 10)` to compute "first of this month" / "today" — `
+toISOString()` converts through UTC first, which silently rolled the "first of month" default back
+one calendar day in any timezone ahead of UTC (observed live: "From" showed `08/31/2026` instead
+of `09/01/2026`). Fixed with a `localDateString()` helper that reads `getFullYear()`/`getMonth()`/
+`getDate()` directly, no UTC round-trip; the same latent bug in `ExpensesPage`'s "New expense"
+default date (this phase's own new code) was fixed the same way. Two other pre-existing call sites
+with the identical pattern (`fee-settings-page.tsx`'s default `effective_from`, Phase 9) were left
+alone — untouched by this phase, out of scope to fix incidentally.
+
+**Bug found but not fixed (pre-existing, out of scope — nav permission filtering):** while
+verifying RBAC live, a Cashier login still showed the Integrations nav group (Amazon
+Import/Import History/Fee Settings/SKU Mapping — all gated `integrations.amazon`, which Cashier
+lacks) in the sidebar. `frontend/src/components/layout/nav.ts` declares a `permission` field on
+every entry, but `sidebar.tsx` (unchanged since Phase 1, confirmed via `git log`) never reads it —
+nothing has ever actually filtered the sidebar by permission, across every phase. This is cosmetic,
+not a security gap: every page still enforces its own permission via the API (403) and/or
+`useHasPermission()`, exactly as verified for this phase's own Expenses/Profit pages. Left for a
+future session (Phase 17 Settings/Security polish is the natural place) rather than expanding this
+phase's scope into the shared layout component.
+
+Previously: Phase 12 — Purchases + Suppliers (ADR-017, `HEXAGARE_FEATURES.md` §32, §33). New
 **`Supplier`** model in `apps/suppliers` (real implementation replacing the scaffold) — `name`
 (required), `company`/`phone`/`email`/`address`/`gstin`/`payment_terms`/`notes` all optional. New
 **`apps/purchases`**: `PurchaseOrder` (`supplier` FK `PROTECT`, `status`
@@ -402,9 +466,46 @@ server — uploaded a 2-row demo CSV (one importable, one bad-SKU row), watched 
 PENDING→PARTIAL with the bad row surfaced in `error_log`; created/activated/deleted a SKU mapping;
 created a category-scoped fixed-amount fee rule and confirmed it listed correctly.
 
-**Next up:** Phase 13 — Expenses + Profit/Finance (see `HEXAGARE_BUILD_PROMPTS.md`).
-**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12.
-**Notes / deviations from the plan:** Phase 12: (107) **New RBAC codename `purchases.manage`**
+**Next up:** Phase 14 — Reports + Exports (see `HEXAGARE_BUILD_PROMPTS.md`).
+**Completed phases:** Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12, Phase 13.
+**Notes / deviations from the plan:** Phase 13: (118) **No new RBAC codename was added** — unlike
+every prior phase that introduced a new resource, `expenses.manage`/`finance.view` were already
+both reserved since Phase 1, and (per ADR-018) `expenses.manage` alone gates the whole `Expense`
+resource including reads, matching how `nav.ts` had already gated the Expenses link before this
+phase touched it. (119) **`FinanceService` sums a manually logged `Expense` and the matching
+`AmazonOrderSettlement` column into the same bucket** rather than treating them as mutually
+exclusive — a deliberate simplification (ADR-018 point 3): double-entry is possible if an operator
+logs an expense for a cost Amazon's settlement already captured, and this phase doesn't add a
+flag to prevent that. (120) **GST/discounts/refunds are reported but never subtracted in the
+profit waterfall** — `Sale.subtotal` is already the post-discount, GST-exclusive "Sales Revenue"
+§36's diagram starts from, so subtracting `discounts` again would double-count it; confirmed via
+`test_refunds_are_reported_but_not_subtracted_from_net_profit`. (121) **Per-serial profit only
+apportions Amazon settlement fee columns for an Amazon-channel sale** — an offline-sold unit's
+"Profit" card shows ₹0.00 for Amazon fees/courier/advertising/other charges (there is no per-unit
+attribution for those on an offline sale; only aggregate `Expense` rows capture them at the
+summary level). (122) 325→349 backend tests (24 new:
+`apps/expenses/tests/{test_api,test_services}.py`, the latter built on a real
+`CompleteSaleService` checkout *and* a real `AmazonOrderImportService.run` import — same
+"exercise the actual service, don't hand-build totals" convention as `apps.customers.tests.
+test_services` — covering the purchase-cost-vs-fallback branch, expense-bucket mapping, date-range
+exclusion, channel filtering, draft/cancelled exclusion, Amazon settlement fee flow-through, both
+online and offline per-serial profit, the never-sold-unit rejection, and the refund-is-reported-
+not-subtracted case). `ruff check` clean; `python manage.py spectacular --fail-on-warn` needed no
+new `ENUM_NAME_OVERRIDES` entry (`Expense.category` didn't collide with anything) but did need a
+class-level `serializer_class` default plus `@extend_schema(responses=...)` on `FinanceViewSet`'s
+three actions — it has no `queryset` (every action computes its response from `FinanceService`,
+not a model), which spectacular treated as a hard error, not just a warning, until fixed; the
+resulting `unit_id` path-param warning is left unannotated, same pre-existing class as
+`SaleViewSet`'s `line_id`/`unit_id` (Phase 8 note 69). (123) `seed_demo_data` gains a new
+`_seed_expenses` step — four demo `Expense` rows keyed on `(category, note)` for idempotency (no
+natural business key exists otherwise), pushing `Expense.objects.count()` to 4;
+`apps/common/tests/test_seed_demo_data.py`'s `test_is_idempotent` gained a matching assertion,
+same as every phase that adds to the seed data. (124) Two bugs caught live via the
+Claude-in-Chrome MCP — one fixed (a timezone-conversion off-by-one in this phase's own new default
+-date logic, `toISOString()` vs. the viewer's local calendar), one left for a future session (nav
+permission filtering has never actually been wired up, across every phase, since `sidebar.tsx` was
+written in Phase 1) — see the Status section above for the full writeup of both.
+Phase 12: (107) **New RBAC codename `purchases.manage`**
 added (ADR-017) — the three codenames reserved since Phase 1 (`purchases.view`,
 `purchases_receiving`, `suppliers.manage`) left a gap: nothing gated creating or editing a
 purchase order itself, unlike every other domain's `.view`/`.manage` pair. User-confirmed decision

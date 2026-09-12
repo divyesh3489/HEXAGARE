@@ -998,3 +998,80 @@ and a manual quantity — starts from an `ORDERED`/`PARTIALLY_RECEIVED`
 purchase order and receives across all of its pending lines in one call),
 replacing the three Phase 0 stub routes at `/purchases/suppliers`,
 `/purchases/orders` and `/purchases/receive`.
+
+## ADR-018 — Expenses/Finance: `Expense.category` is a closed enum, one
+`expenses.manage` codename, profit buckets fold in both settlement and
+manual-expense figures
+
+**Status:** Accepted (Phase 13)
+
+**Context.** HEXAGARE_FEATURES.md §35-37: expenses need a fixed set of
+categories (Amazon fees, Shipping, Courier, Packaging, Advertising,
+Manufacturing, Raw materials, Offline expenses, Other expenses), and the
+business needs a profit rollup combining product cost, those expenses, and
+Amazon's own per-order fees (already tracked per Phase 9's
+`AmazonOrderSettlement`) into gross/net profit and margin, plus an optional
+per-serial-number profit breakdown using each unit's own `purchase_cost`
+(Phase 12). `finance.view`/`expenses.manage` were both reserved since Phase
+1, but only one codename existed for the whole `Expense` resource — every
+other domain has a `.view`/`.manage` pair, so a decision was needed on
+whether `expenses.manage` alone should gate the resource or whether a new
+`.view` codename was owed.
+
+**Decision.**
+1. **`Expense.category` is a fixed `TextChoices` field, not a separate
+   `ExpenseCategory` model.** The taxonomy in §35 is closed — the business
+   doesn't add its own categories — same reasoning as
+   `apps.integrations.amazon.models.AmazonFeeConfig.FeeName`; a model would
+   add a join and an admin CRUD screen for nine rows that never change.
+2. **No new RBAC codename was added — `expenses.manage` alone gates every
+   `ExpenseViewSet` action**, including list/retrieve. `frontend/src/
+   components/layout/nav.ts` already gated the Expenses nav entry on
+   `expenses.manage` (not `finance.view`) before this phase touched it,
+   which settled the question: expense records themselves are an
+   Admin/Manager-only ledger, not something worth a separate read-only
+   audience. `finance.view` gates the three read-only `FinanceViewSet`
+   actions (`summary/`, `by-channel/`, `units/{id}/profit/`) instead — both
+   codenames resolve to the same Admin/Manager set today via the existing
+   `ROLE_MANAGER = _ALL - {"users.manage", "settings.manage"}` formula, so
+   this only matters if a future role is granted one but not the other.
+3. **`FinanceService.summary` buckets fold in both an `Expense` row and the
+   matching `AmazonOrderSettlement` column** — `shipping = Expense[SHIPPING,
+   COURIER] + settlement.shipping_cost`, and likewise for
+   `amazon_fees`/`advertising`/`other_expenses` (see `apps/expenses/
+   services.py`'s module docstring for the full mapping). Either can be the
+   real source for a given cost: Amazon's per-order figures are exact but
+   only exist for Amazon sales, while a manually logged `Expense` covers
+   everything else (bulk packaging, offline courier, a lump-sum monthly
+   Amazon reconciliation adjustment that doesn't map to one order). Summing
+   both is a deliberate simplification — the two are not modeled as
+   mutually exclusive, so double-entry is possible if an operator logs an
+   `Expense` for a cost `AmazonOrderSettlement` already captured; guarding
+   against that would need a manual-vs-automatic flag this phase doesn't
+   add.
+4. **GST collected, discounts and refunds are reported but never subtracted
+   in the profit waterfall.** `Sale.subtotal` ("taxable sales") is already
+   the post-discount, GST-exclusive figure the §36 diagram's "Sales Revenue"
+   starts from, so subtracting `discounts` again would double-count it;
+   refunds and GST are explicitly called out in §36 as separate, non-profit
+   figures to report alongside the waterfall, not steps in it.
+5. **Per-serial profit (§37) apportions a sale line's `taxable_value` (and,
+   for an Amazon order, its settlement's fee columns) evenly across the
+   line's bound units** — there is no per-unit breakdown of either, the same
+   even-split reasoning `apps.billing.services.returns.ReturnService` uses
+   for refund amounts. `SerializedUnit.purchase_cost` (Phase 12) is used
+   directly when set, falling back to `variant.effective_purchase_price`
+   for a unit that predates per-unit cost tracking.
+
+**Consequences.** `apps/expenses` gained a real `Expense` model and
+`FinanceService` (`apps/expenses/services.py`), read-only Python-loop
+aggregation over `apps.sales`/`apps.billing`/`apps.integrations.amazon` at
+call time, the same style as `apps.customers.services`/
+`apps.suppliers.services` — no cached columns, no new fields on `Sale` or
+`AmazonOrderSettlement`. API: `/api/v1/expenses/` (CRUD) and
+`/api/v1/expenses/finance/{summary,by-channel,units/{id}/profit}/`.
+Frontend: `frontend/src/features/expenses/` (list + inline create/edit) and
+`frontend/src/features/finance/` (`ProfitSummaryPage` — date range, summary
+tiles, by-channel table), plus a "Profit (this sale)" card on
+`SerializedUnitDetailPage` for a `SOLD`/`RETURNED` unit — replacing the
+Phase 0 stub routes at `/finance/expenses` and `/finance/profit`.
