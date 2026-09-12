@@ -12,9 +12,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useCheckout, useInvoice, useInvoicePdf } from "./hooks";
-import { invoiceStatusVariant } from "./status";
-import { PAYMENT_METHODS, type PaymentMethod } from "./types";
+import { useCheckout, useInvoice, useInvoicePdf, useSendInvoice } from "./hooks";
+import { deliveryStatusVariant, invoiceStatusVariant } from "./status";
+import {
+  DELIVERY_CHANNELS,
+  PAYMENT_METHODS,
+  type DeliveryChannel,
+  type InvoiceDelivery,
+  type PaymentMethod,
+} from "./types";
 
 const selectClass =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -73,6 +79,85 @@ function SettleBalanceForm({ saleId, balanceDue }: { saleId: number; balanceDue:
         {checkout.isPending ? "Recording…" : "Record payment"}
       </Button>
     </div>
+  );
+}
+
+function DeliveryRow({ delivery }: { delivery: InvoiceDelivery }) {
+  return (
+    <div className="flex items-center justify-between border-b py-1.5 text-sm last:border-0">
+      <div>
+        <span className="font-medium">{delivery.channel}</span>
+        {delivery.recipient && (
+          <span className="ml-2 text-xs text-muted-foreground">{delivery.recipient}</span>
+        )}
+        {delivery.status === "FAILED" && delivery.error_message && (
+          <div className="text-xs text-destructive">{delivery.error_message}</div>
+        )}
+      </div>
+      <Badge variant={deliveryStatusVariant(delivery.status)}>{delivery.status}</Badge>
+    </div>
+  );
+}
+
+/** Channel + optional recipient override, a Send button, and the delivery
+ * history below it. Only shown once the PDF is READY -- there is nothing to
+ * send before that. Leaving "Recipient" blank falls back server-side to the
+ * sale's linked customer's email/phone. */
+function SendInvoiceCard({ invoiceId, deliveries }: { invoiceId: number; deliveries: InvoiceDelivery[] }) {
+  const [channel, setChannel] = useState<DeliveryChannel>("EMAIL");
+  const [recipient, setRecipient] = useState("");
+  const send = useSendInvoice(invoiceId);
+
+  const submit = () => {
+    send.mutate(
+      { channel, recipient: recipient.trim() || undefined },
+      {
+        onSuccess: () => {
+          toast.success(`Invoice queued for ${channel === "EMAIL" ? "email" : "WhatsApp"} delivery`);
+          setRecipient("");
+        },
+        onError: (err) => toast.error(errMsg(err, "Couldn't send the invoice")),
+      },
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Send invoice</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className={selectClass}
+            value={channel}
+            onChange={(e) => setChannel(e.target.value as DeliveryChannel)}
+          >
+            {DELIVERY_CHANNELS.map((c) => (
+              <option key={c} value={c}>
+                {c === "EMAIL" ? "Email" : "WhatsApp"}
+              </option>
+            ))}
+          </select>
+          <Input
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+            placeholder="Recipient (leave blank to use customer's contact)"
+            className="w-64"
+          />
+          <Button size="sm" disabled={send.isPending} onClick={submit}>
+            {send.isPending ? "Sending…" : "Send"}
+          </Button>
+        </div>
+        {deliveries.length > 0 && (
+          <div className="border-t pt-2">
+            {deliveries.map((delivery) => (
+              <DeliveryRow key={delivery.id} delivery={delivery} />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -206,6 +291,10 @@ export function InvoiceDetailPage() {
                 ))}
               </CardContent>
             </Card>
+          )}
+
+          {invoice.status === "READY" && (
+            <SendInvoiceCard invoiceId={invoice.id} deliveries={invoice.deliveries} />
           )}
         </div>
 

@@ -3,7 +3,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 
 import { salesKeys } from "@/features/sales/api";
 import { billingApi, billingKeys, type InvoiceQuery } from "./api";
-import type { PaymentEntry } from "./types";
+import type { DeliveryChannel, PaymentEntry } from "./types";
 
 export function useInvoices(query: InvoiceQuery = {}) {
   return useQuery({
@@ -13,14 +13,21 @@ export function useInvoices(query: InvoiceQuery = {}) {
   });
 }
 
-/** One invoice. While the PDF is still rendering, poll every 2s -- same
- * pattern as the label-batch PDF poll. */
+/** One invoice. Polls every 2s while the PDF is still rendering (same
+ * pattern as the label-batch PDF poll) or while a just-sent delivery is
+ * still PENDING (the actual send happens in the Celery worker, out of band
+ * from the `send/` response). */
 export function useInvoice(id: number | undefined) {
   return useQuery({
     queryKey: billingKeys.invoice(id ?? -1),
     queryFn: () => billingApi.invoice(id as number),
     enabled: id !== undefined && id >= 0,
-    refetchInterval: (query) => (query.state.data?.status === "PENDING" ? 2000 : false),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      const deliveryPending = data.deliveries.some((d) => d.status === "PENDING");
+      return data.status === "PENDING" || deliveryPending ? 2000 : false;
+    },
   });
 }
 
@@ -39,6 +46,19 @@ export function useCheckout() {
       if (result.invoice) {
         qc.setQueryData(billingKeys.invoice(result.invoice.id), result.invoice);
       }
+    },
+  });
+}
+
+/** Sends the invoice over email/WhatsApp -- writes the returned invoice
+ * (with its new `deliveries` entry) straight into the query cache. */
+export function useSendInvoice(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ channel, recipient }: { channel: DeliveryChannel; recipient?: string }) =>
+      billingApi.sendInvoice(invoiceId, channel, recipient),
+    onSuccess: (invoice) => {
+      qc.setQueryData(billingKeys.invoice(invoice.id), invoice);
     },
   });
 }

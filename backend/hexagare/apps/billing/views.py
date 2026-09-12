@@ -6,6 +6,7 @@
                                 otherwise leaves it RESERVED (on hold).
 - ``invoices/``                list/retrieve generated invoices.
 - ``invoices/{id}/pdf/``       download the rendered PDF (once READY).
+- ``invoices/{id}/send/``      send the invoice over email/WhatsApp (Phase 15).
 - ``payments/``                list/retrieve recorded payments (``?sale=``).
 - ``returns/resolve/``         GET  preview a scanned code before returning it.
 - ``returns/``                 list/retrieve/create returns (Phase 10).
@@ -15,6 +16,7 @@
 
 from __future__ import annotations
 
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -25,14 +27,16 @@ from rest_framework.views import APIView
 
 from apps.accounts.permissions import require
 from apps.common.renderers import BinaryRenderer
+from apps.notifications.tasks import send_invoice_delivery
 from apps.sales.models import Sale
 
-from .models import Invoice, Payment, Return, ReturnUnit
+from .models import Invoice, InvoiceDelivery, Payment, Return, ReturnUnit
 from .serializers import (
     CheckoutResultSerializer,
     CheckoutSerializer,
     InvoiceDetailSerializer,
     InvoiceListSerializer,
+    InvoiceSendSerializer,
     PaymentSerializer,
     ReturnCreateSerializer,
     ReturnDetailSerializer,
@@ -104,10 +108,15 @@ class InvoiceViewSet(
 ):
     permission_classes = [require(_VIEW)]
 
+    def get_permissions(self):
+        if self.action == "send":
+            return [require(_MANAGE)()]
+        return super().get_permissions()
+
     def get_queryset(self):
-        qs = Invoice.objects.select_related("sale__sales_channel").prefetch_related(
-            "sale__lines__variant__product", "sale__payments", "deliveries"
-        )
+        qs = Invoice.objects.select_related(
+            "sale__sales_channel", "sale__customer"
+        ).prefetch_related("sale__lines__variant__product", "sale__payments", "deliveries")
         params = self.request.query_params
         if sale := params.get("sale"):
             qs = qs.filter(sale_id=sale)
@@ -127,6 +136,43 @@ class InvoiceViewSet(
         with invoice.pdf_file.open("rb") as handle:
             data = handle.read()
         return Response(data, content_type="application/pdf")
+
+    @extend_schema(request=InvoiceSendSerializer, responses=InvoiceDetailSerializer)
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Create an :class:`InvoiceDelivery` row and enqueue
+        ``apps.notifications.tasks.send_invoice_delivery`` to actually send
+        it. ``recipient`` defaults to the sale's linked customer's
+        email/phone (whichever the channel needs) when not supplied."""
+        invoice = self.get_object()
+        if invoice.status != Invoice.Status.READY:
+            raise serializers.ValidationError("This invoice's PDF is not ready yet.")
+
+        serializer = InvoiceSendSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        channel = serializer.validated_data["channel"]
+        recipient = serializer.validated_data.get("recipient", "").strip()
+        if not recipient:
+            customer = invoice.sale.customer
+            if customer is not None:
+                recipient = (
+                    customer.email if channel == InvoiceDelivery.Channel.EMAIL else customer.phone
+                ).strip()
+        if not recipient:
+            raise serializers.ValidationError(
+                "No recipient on file for this sale's customer -- provide one."
+            )
+
+        delivery = InvoiceDelivery.objects.create(
+            invoice=invoice, channel=channel, recipient=recipient
+        )
+        transaction.on_commit(lambda: send_invoice_delivery.delay(delivery.id))
+
+        invoice = self.get_queryset().get(pk=invoice.pk)
+        return Response(
+            InvoiceDetailSerializer(invoice, context=self.get_serializer_context()).data,
+            status=201,
+        )
 
 
 class PaymentViewSet(

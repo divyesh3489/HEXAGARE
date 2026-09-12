@@ -353,9 +353,12 @@ change this phase.
   `Sale.amount_paid`/`Sale.balance_due` (see below) rather than duplicating
   the computation.
 - **`InvoiceDelivery`** — `invoice` FK, `channel` (`EMAIL`/`WHATSAPP`),
-  `status` (`PENDING`/`SENT`/`FAILED`), `sent_at`, `error_message`. **Schema
-  only this phase** — Phase 15 (Notifications) is what actually creates/
-  updates rows here when "Send invoice" goes out.
+  `recipient` (the email/phone actually targeted — an explicit override or
+  resolved from the sale's customer, added Phase 15), `status`
+  (`PENDING`/`SENT`/`FAILED`), `sent_at`, `error_message`. Rows are created by
+  `InvoiceViewSet.send` (`POST /billing/invoices/{id}/send/`, `apps.billing`)
+  and updated by `apps.notifications.tasks.send_invoice_delivery` (Phase 15)
+  once the actual email/WhatsApp send resolves.
 - **`Sale.amount_paid`/`Sale.balance_due`** (`apps.sales.models`, not
   `apps.billing`) — computed properties walking the reverse `sale.payments`
   accessor (a refund-type row subtracts). Deliberately live on `Sale`, not

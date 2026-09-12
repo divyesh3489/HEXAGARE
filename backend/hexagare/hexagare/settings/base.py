@@ -10,6 +10,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 # backend/hexagare  (the Django project root, holds manage.py)
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -245,6 +246,17 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 
+# Periodic tasks. Low-stock alerts (Phase 15) are the first entry -- interval
+# configurable via env since "how often" is an operational, not code, choice.
+CELERY_BEAT_SCHEDULE = {
+    "notifications-low-stock-alerts": {
+        "task": "apps.notifications.tasks.send_low_stock_alerts",
+        "schedule": crontab(
+            minute=0, hour=f"*/{env.int('LOW_STOCK_ALERT_INTERVAL_HOURS', default=6)}"
+        ),
+    },
+}
+
 # --------------------------------------------------------------------------- #
 # Hexagare domain config (SKU / serial-number formatting)
 # --------------------------------------------------------------------------- #
@@ -277,6 +289,22 @@ EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
 EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=15)
+
+# --------------------------------------------------------------------------- #
+# WhatsApp Cloud API (Phase 15) -- see apps.notifications.services.WhatsAppCloudAPI
+# --------------------------------------------------------------------------- #
+WHATSAPP_PHONE_NUMBER_ID = env("WHATSAPP_PHONE_NUMBER_ID", default="")
+WHATSAPP_ACCESS_TOKEN = env("WHATSAPP_ACCESS_TOKEN", default="")
+WHATSAPP_BUSINESS_ACCOUNT_ID = env("WHATSAPP_BUSINESS_ACCOUNT_ID", default="")
+WHATSAPP_API_VERSION = env("WHATSAPP_API_VERSION", default="v21.0")
+
+# --------------------------------------------------------------------------- #
+# Notifications (Phase 15) -- who gets the low-stock/out-of-stock digest.
+# No per-user notification preferences exist yet, so this is a flat,
+# operator-configured recipient list rather than tied to a role/user.
+# --------------------------------------------------------------------------- #
+LOW_STOCK_ALERT_EMAILS = env.list("LOW_STOCK_ALERT_EMAILS", default=[])
+LOW_STOCK_ALERT_WHATSAPP_TO = env.list("LOW_STOCK_ALERT_WHATSAPP_TO", default=[])
 
 # --------------------------------------------------------------------------- #
 # Logging

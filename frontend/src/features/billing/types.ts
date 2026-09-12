@@ -19,9 +19,13 @@ export interface Payment {
   created_at: string;
 }
 
+export const DELIVERY_CHANNELS = ["EMAIL", "WHATSAPP"] as const;
+export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number];
+
 export interface InvoiceDelivery {
   id: number;
-  channel: "EMAIL" | "WHATSAPP";
+  channel: DeliveryChannel;
+  recipient: string;
   status: "PENDING" | "SENT" | "FAILED";
   sent_at: string | null;
   error_message: string;

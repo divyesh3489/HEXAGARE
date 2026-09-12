@@ -210,7 +210,63 @@ follow-up work).
 
 ## Current Phase
 
-**Status:** Phase 14 done — Reports + Exports (`HEXAGARE_FEATURES.md` §38-44, narrowed per the
+**Status:** Phase 15 done — Notifications (Email + WhatsApp) (`HEXAGARE_FEATURES.md` §47,
+narrowed to exactly the Phase 15 build prompt — invoice send + low-stock digest, not the
+broader in-app "Dashboard Notifications" bell/center from §47, which is future/Phase-16-adjacent
+territory — no ADR, since nothing here departs from established patterns). **`apps/notifications`**
+(real implementation replacing the scaffold) — no models of its own; two isolated sender classes
+in `services.py` (`EmailNotificationService` on Django's `EmailMessage`/`EMAIL_BACKEND`, already
+configured since Phase 1 for password-reset; `WhatsAppCloudAPI` + `WhatsAppNotificationService`
+wrapping the Meta Cloud API's `/messages` endpoint via `requests`, the project's first use of
+that dependency) and two Celery tasks in `tasks.py`: **`send_invoice_delivery(delivery_id)`**
+(dispatches by channel, updates the `InvoiceDelivery` row `SENT`/`FAILED` — same recoverable-
+failure shape as `render_invoice_pdf`) and **`send_low_stock_alerts()`**, the project's first
+`CELERY_BEAT_SCHEDULE` entry (interval via `LOW_STOCK_ALERT_INTERVAL_HOURS`, default 6h), which
+reuses `apps.inventory.services.alerts.compute_alerts()` (Phase 4) unchanged, filters to
+`out_of_stock`/`low_stock` only, and digests to whichever of `LOW_STOCK_ALERT_EMAILS`/
+`LOW_STOCK_ALERT_WHATSAPP_TO` are configured (a flat operator-configured recipient list — no
+per-user notification preferences exist, so this isn't tied to a role/user). WhatsApp messages
+are sent as plain **text**, not a pre-approved template — Meta requires a template only for a
+business-initiated first contact, and guessing at an approved template's component layout isn't
+possible from code; a comment in `services.py` flags swapping to `send_template` once one exists.
+**`InvoiceDelivery`** (`apps.billing`, Phase 8 schema) gains a `recipient` field (small additive
+migration) recording the actual email/phone targeted. **`InvoiceViewSet.send`** (new action,
+`POST /billing/invoices/{id}/send/`, `billing.manage` — same codename Cashier/Manager/Admin
+already hold for invoice actions, no RBAC change) creates the `InvoiceDelivery` row and enqueues
+the task via `transaction.on_commit`; `recipient` is optional in the request, defaulting to the
+sale's linked customer's email/phone when omitted, rejected with 400 when neither resolves.
+Frontend: `InvoiceDetailPage` gains a "Send invoice" card (channel select + recipient input +
+Send button, plain-Tailwind `<select>` — no Dialog primitive exists in this project, same
+inline-form style as the existing "settle balance" card) and renders `invoice.deliveries` with a
+status badge and inline error message per row; `useInvoice`'s existing PDF-pending poll now also
+polls while any delivery is `PENDING` (the actual send happens in the Celery worker, out of band
+from the `send/` response). Verified: `ruff check` clean; full `manage.py test` (392 tests, ~20
+new, all passing — run via `docker compose run --rm -e DJANGO_ENV=test backend ...`, i.e. `make
+test`'s actual invocation; running `manage.py test` without `DJANGO_ENV=test` silently uses
+*development* settings, where `CELERY_TASK_ALWAYS_EAGER=False` — Celery tasks enqueue against
+the real Redis broker but nothing consumes them inside the test process, so any test asserting a
+task's result fails with the task's target still `PENDING`/un-updated. This is almost certainly
+the actual root cause behind the "10 pre-existing failures" flagged in the Phase 14 note below as
+an `on_commit`/`captureOnCommitCallbacks` gap — with `DJANGO_ENV=test` set correctly, all 392
+tests pass, that note's 10 tests included; left the Phase 14 entry itself unedited since it's a
+historical record, but flagging here so a future session doesn't re-diagnose it as a
+`captureOnCommitCallbacks` bug). `eslint` and `tsc -b && vite build` both clean. **Verified live**
+via the Claude-in-Chrome MCP against the running dev stack: sent an existing READY invoice over
+both Email (real SMTP attempt to the configured host, no credentials set in this dev `.env` →
+correctly recorded `FAILED` with the real `535/530` auth error surfaced in the UI) and WhatsApp
+(no Cloud API credentials configured → correctly recorded `FAILED` with a clear "not configured"
+error) — confirms the send/enqueue/update/render round-trip end to end without needing real
+credentials. **Two container-image gotchas hit and resolved live, worth remembering**: (1)
+`celery-worker`/`celery-beat` only pick up brand-new task modules (`apps.notifications.tasks`
+didn't exist when they were last started) on a real container **recreate**, not `docker compose
+restart` (restart reuses the already-created container/image reference) — a stale worker
+silently discarded the first `send_invoice_delivery` message with "Received unregistered task"
+rather than erroring loudly; (2) similarly, the `frontend` Vite dev server's file-watcher on this
+Windows/Docker Desktop bind mount did not pick up source edits via HMR without a container
+restart. Neither is a code defect, both are noted here so the next session isn't surprised by an
+API/UI change silently not taking effect against the already-running dev stack.
+
+Previously: Phase 14 done — Reports + Exports (`HEXAGARE_FEATURES.md` §38-44, narrowed per the
 build prompt to the six named report types and CSV/Excel only — no ADR, since nothing here departs
 from established patterns). New **`apps/reports`** (real implementation replacing the scaffold).
 **`ReportsService`** (`apps/reports/services.py`) is a read-only, no-cached-columns aggregation
